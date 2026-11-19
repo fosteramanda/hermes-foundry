@@ -95,6 +95,8 @@ public sealed class HermesResponseHandler(
         {
             model = modelSelection.Model,
             provider = modelSelection.Provider,
+            // The gateway streams by default; this handler parses one JSON document.
+            stream = false,
             messages = new[] { new { role = "user", content = prompt } }
         });
 
@@ -209,6 +211,10 @@ public sealed class HermesResponseHandler(
       + "the tools attached to this run. For a requested side effect, call the appropriate tool and "
       + "treat only its returned success as completion. If the tool fails, report the exact failure; "
       + "never replace execution with scheduling advice or an unsupported claim of success.\n\n"
+      + "No chat conversation is attached to this run, so your final text reaches nobody by itself. "
+      + "When the task asks you to tell, message, brief or notify your owner, deliver it with "
+      + "send_teams_message (to='owner') or send_email, and count only the tool's success as "
+      + "delivery.\n\n"
       + "TASK FOR THIS OCCURRENCE:\n"
       + task;
 

@@ -110,6 +110,9 @@ mcp = FastMCP(
         "your OneDrive. When the turn prompt lists an upload path, call read_uploaded_file on that "
         "exact path before discussing its contents. Never guess from the filename or try to open "
         "the original SharePoint URL in a browser. "
+        "PROACTIVE MESSAGES: a scheduled Routine has no chat to answer in, so its final text reaches "
+        "nobody. When scheduled work should tell, brief or notify your owner, call "
+        "send_teams_message (to='owner') or send_email and treat only the tool's success as delivery. "
         "WEB RESEARCH: never answer a 'look it up' request from memory. If web_search returns a "
         "SOURCE LIST instead of an answer, that is a success, not a failure — Azure's copyright "
         "filter blocks composed answers for recipes, lyrics and article text. Read the most relevant "
@@ -1191,6 +1194,70 @@ def send_email(to: str, subject: str, body: str, html: bool = False) -> str:
     }
     r = _graph("POST", _me("sendMail"), payload)
     return "Sent." if r.startswith("OK") or r == "" else r
+
+
+@mcp.tool()
+def send_teams_message(message: str, to: str = "owner") -> str:
+    """Send a Teams chat message FROM THE AGENT'S OWN account, 1:1, to your owner or one colleague.
+
+    Use this when there is no chat turn to answer in: a scheduled Routine's final text reaches
+    nobody unless you send it. `to` is "owner" (your manager, the default) or one email address or
+    UPN in this tenant. Plain text. Only a verified owner conversation or an owner-authorized
+    Routine may use it. In an ordinary chat turn just reply; do not also send a copy with this tool.
+    """
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "outbound Teams messages")
+    if denied:
+        return denied
+    if _caller_tier() != "owner":
+        return ("ERROR: MESSAGE NOT SENT — only your verified owner, or a Routine your owner "
+                "authorized, may have you start a Teams message.")
+    text = (message or "").strip()
+    recipient = (to or "owner").strip()
+    if not text:
+        return "ERROR: MESSAGE NOT SENT — the message is empty."
+
+    def _object_id(path):
+        raw = _graph("GET", path)
+        if raw.startswith("ERROR"):
+            return "", raw
+        try:
+            return str((json.loads(raw) or {}).get("id") or ""), raw
+        except json.JSONDecodeError:
+            return "", "ERROR: unreadable Graph response."
+
+    me_id, detail = _object_id(_me("?$select=id"))
+    if not me_id:
+        return f"MESSAGE NOT SENT — could not read this agent's own identity.\n{detail}"
+    if recipient.lower() == "owner":
+        to_id, detail = _object_id(_me("manager?$select=id"))
+        if not to_id:
+            return ("MESSAGE NOT SENT — this Agent User has no manager to treat as its owner. "
+                    f"Pass the owner's email address in `to`.\n{detail}")
+    else:
+        if not re.fullmatch(r"[^\s/?#@']+@[^\s/?#@']+", recipient):
+            return "ERROR: MESSAGE NOT SENT — `to` must be 'owner' or one email address or UPN."
+        to_id, detail = _object_id(f"users/{urllib.parse.quote(recipient)}?$select=id")
+        if not to_id:
+            return f"MESSAGE NOT SENT — could not find {recipient} in this tenant.\n{detail}"
+    if to_id == me_id:
+        return "ERROR: MESSAGE NOT SENT — the recipient is this agent itself."
+    # Creating a oneOnOne chat that already exists returns the existing chat.
+    chat = _graph("POST", "chats", {"chatType": "oneOnOne", "members": [
+        {"@odata.type": "#microsoft.graph.aadUserConversationMember", "roles": ["owner"],
+         "user@odata.bind": f"{GRAPH}/users('{user_id}')"} for user_id in (me_id, to_id)]})
+    if chat.startswith("ERROR"):
+        return f"MESSAGE NOT SENT — the Teams chat could not be opened.\n{chat}"
+    try:
+        chat_id = str((json.loads(chat) or {}).get("id") or "")
+    except json.JSONDecodeError:
+        chat_id = ""
+    if not chat_id:
+        return "MESSAGE NOT SENT — Graph returned no chat id."
+    sent = _graph("POST", f"chats/{urllib.parse.quote(chat_id, safe='')}/messages",
+                  {"body": {"contentType": "text", "content": text[:20000]}})
+    if sent.startswith("ERROR"):
+        return f"MESSAGE NOT SENT — do not report it as delivered.\n{sent}"
+    return "TEAMS MESSAGE SENT from your own account."
 
 
 @mcp.tool()

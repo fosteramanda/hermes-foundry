@@ -225,6 +225,31 @@ class GraphOneDriveTests(unittest.TestCase):
         })
         self.assertEqual(result, "Sent.")
 
+    def test_send_teams_message_posts_to_the_owner_chat_as_the_agent(self):
+        replies = ['{"id":"agent-id"}', '{"id":"owner-id"}', '{"id":"19:chat@unq.gbl.spaces"}', '{"id":"1"}']
+        with mock.patch.object(self.m, "_graph", side_effect=replies) as graph:
+            result = self.m.send_teams_message("Brief ready")
+
+        self.assertEqual([c.args[:2] for c in graph.call_args_list], [
+            ("GET", "me/?$select=id"), ("GET", "me/manager?$select=id"), ("POST", "chats"),
+            ("POST", "chats/19%3Achat%40unq.gbl.spaces/messages")])
+        members = graph.call_args_list[2].args[2]["members"]
+        self.assertEqual([m["user@odata.bind"].rsplit("'", 2)[1] for m in members], ["agent-id", "owner-id"])
+        self.assertEqual(graph.call_args_list[3].args[2]["body"]["content"], "Brief ready")
+        self.assertIn("SENT", result)
+
+    def test_send_teams_message_refuses_colleagues_and_reports_failed_delivery(self):
+        with mock.patch.dict(os.environ, {"AGENT_CALLER_TIER": "colleague"}), \
+             mock.patch.object(self.m, "_graph") as graph:
+            refused = self.m.send_teams_message("hi", "person@example.com")
+        graph.assert_not_called()
+        self.assertIn("NOT SENT", refused)
+
+        replies = ['{"id":"agent-id"}', '{"id":"owner-id"}', '{"id":"19:chat"}', "ERROR 403 from Graph: denied"]
+        with mock.patch.object(self.m, "_graph", side_effect=replies):
+            failed = self.m.send_teams_message("hi")
+        self.assertIn("NOT SENT", failed)
+
     def test_outsider_graph_mutations_are_blocked_before_token_or_network(self):
         with mock.patch.object(self.m, "_caller_tier", return_value="outsider"), \
              mock.patch.object(self.m, "_token") as token, \
