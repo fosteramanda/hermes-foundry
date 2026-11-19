@@ -209,7 +209,7 @@ env = {
     "M365_WRITE_POLICY": write_policy,
     "M365_OUTBOUND_POLICY": outbound_policy,
     # gpt-6.1-sol (the default model) rejects tools plus reasoning_effort on /chat/completions.
-    "FOUNDRY_API_MODE": os.environ.get("FOUNDRY_API_MODE", "codex_responses"),
+    "MODEL_API_MODE": os.environ.get("MODEL_API_MODE", "codex_responses"),
 }
 if allow:
     env["MODEL_ALLOWED_DEPLOYMENTS"] = allow

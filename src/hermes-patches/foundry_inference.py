@@ -47,9 +47,9 @@ def model_configuration(env=None):
         for key in ('MODEL_DEPLOYMENT_NAME', 'FALLBACK_MODEL_DEPLOYMENT_NAME', 'AZURE_FOUNDRY_BASE_URL'):
             if not env.get(key):
                 raise ValueError(key + ' is required when Foundry inference is enabled')
-    api_mode = env.get('FOUNDRY_API_MODE', '').strip().lower()
+    api_mode = env.get('MODEL_API_MODE', '').strip().lower()
     if api_mode and api_mode not in FOUNDRY_API_MODES:
-        raise ValueError('FOUNDRY_API_MODE must be chat_completions or codex_responses')
+        raise ValueError('MODEL_API_MODE must be chat_completions or codex_responses')
     foundry_mode = {'api_mode': api_mode} if api_mode else {}
     if provider == 'nous':
         model = {'default': models[0], 'provider': 'nous', 'base_url': endpoint}

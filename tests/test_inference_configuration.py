@@ -37,12 +37,12 @@ class InferenceConfigurationTests(unittest.TestCase):
         env = {'INFERENCE_PROVIDER': 'azure-foundry', 'INFERENCE_ALLOWED_PROVIDERS': 'azure-foundry',
                'MODEL_DEPLOYMENT_NAME': 'gpt-6.1-sol', 'FALLBACK_MODEL_DEPLOYMENT_NAME': 'gpt-6.1-sol',
                'AZURE_FOUNDRY_BASE_URL': 'https://example.services.ai.azure.com/openai/v1'}
-        config = inference.model_configuration({**env, 'FOUNDRY_API_MODE': 'codex_responses'})
+        config = inference.model_configuration({**env, 'MODEL_API_MODE': 'codex_responses'})
         self.assertEqual(config['model']['api_mode'], 'codex_responses')
         self.assertTrue(all(f['api_mode'] == 'codex_responses' for f in config['fallback_providers']))
         self.assertNotIn('api_mode', inference.model_configuration(env)['model'])
         with self.assertRaises(ValueError):
-            inference.model_configuration({**env, 'FOUNDRY_API_MODE': 'anthropic_messages'})
+            inference.model_configuration({**env, 'MODEL_API_MODE': 'anthropic_messages'})
 
     def test_invalid_provider_or_endpoint_fails_closed(self):
         for override in ({'INFERENCE_PROVIDER': 'untrusted'}, {'NOUS_MODEL': ''},
