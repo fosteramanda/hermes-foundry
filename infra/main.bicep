@@ -32,13 +32,18 @@ param tags object = {
   managedBy: 'azd'
 }
 
+@description('Optional base name for the Foundry account, project, registry and bot (for example amandahermes). Empty keeps the generated unique names.')
+@maxLength(20)
+param resourceBaseName string = ''
+
 var uniqueSuffix = uniqueString(subscription().subscriptionId, resourceGroup().id, environmentName)
-var accountName = 'hermes${uniqueSuffix}ai'
-var projectName = 'hermes-${uniqueSuffix}-project'
-var registryName = 'hermes${uniqueSuffix}acr'
+var hasBaseName = !empty(resourceBaseName)
+var accountName = hasBaseName ? resourceBaseName : 'hermes${uniqueSuffix}ai'
+var projectName = hasBaseName ? '${resourceBaseName}-project' : 'hermes-${uniqueSuffix}-project'
+var registryName = hasBaseName ? '${resourceBaseName}acr' : 'hermes${uniqueSuffix}acr'
 var agentName = 'hermes-agent-on-foundry'
 var blueprintName = '${agentName}-maib'
-var botName = 'hermes-${uniqueSuffix}-bot'
+var botName = hasBaseName ? '${resourceBaseName}-bot' : 'hermes-${uniqueSuffix}-bot'
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-09-01' = {
   name: accountName

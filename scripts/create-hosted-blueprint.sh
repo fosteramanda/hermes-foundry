@@ -215,6 +215,11 @@ sys.path.insert(0, "scripts")
 from inference_settings import apply
 apply(env, new_install=True)
 body = {
+    "name": agent,
+    "state": "enabled",
+    # Autopilot: each hired instance gets its own Microsoft 365 agent user account.
+    "digital_worker_type": "m365",
+    "draft": False,
     "definition": {
         "kind": "hosted",
         "image": image,
@@ -253,11 +258,14 @@ fi
 python3 scripts/configure_inference_egress.py --body "$WORK/v1.json" --account "$ACCOUNT"
 
 TOKEN=$(az account get-access-token --resource "$RESOURCE" --query accessToken -o tsv)
+# POST /agents creates the agent and its first version in one call. digital_worker_type is a
+# preview field and is accepted only with the DigitalWorker feature header.
 create_version() {
   local body=$1 output=$2
   curl --fail-with-body --silent --show-error \
-    -X POST "${BASE}/agents/${AGENT}/versions?api-version=v1" \
+    -X POST "${BASE}/agents?api-version=v1" \
     -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    -H "Foundry-Features: DigitalWorker=V1Preview" \
     --data-binary "@${body}" > "$output"
 }
 
@@ -270,7 +278,8 @@ echo "Creating hosted-agent version bound to explicit MAIB ${MAIB_NAME}..."
 create_version "$WORK/v1.json" "$WORK/v1-response.json"
 V1=$(python3 - "$WORK/v1-response.json" <<'PY'
 import json, sys
-j=json.load(open(sys.argv[1])); print(j.get("version") or "")
+j=json.load(open(sys.argv[1]))
+print(j.get("version") or ((j.get("versions") or {}).get("latest") or {}).get("version") or "")
 PY
 )
 [ -n "$V1" ] || { echo "ERROR: create response contained no version" >&2; exit 1; }
