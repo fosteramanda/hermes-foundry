@@ -1331,12 +1331,20 @@ def _when(value: str, time_zone: str) -> dict:
 @mcp.tool()
 def create_event(subject: str, start: str, end: str, attendees: str = "",
                  optional_attendees: str = "", time_zone: str = "UTC", body: str = "",
-                 location: str = "", online_meeting: bool = True) -> str:
+                 location: str = "", online_meeting: bool = True,
+                 on_behalf_of_owner: bool = False) -> str:
     """Create an event on the AGENT'S OWN calendar, as organiser, and invite people to it.
 
     `start` and `end` are wall-clock times with NO zone suffix, e.g. "2026-08-15T14:00:00", paired
     with `time_zone` (e.g. "UTC" or "Pacific Standard Time"). `attendees` and `optional_attendees`
     are comma-separated email addresses.
+
+    on_behalf_of_owner=True books the meeting ON YOUR OWNER'S CALENDAR instead, as their Exchange
+    calendar delegate: your owner is the organiser and invitations say they were sent by you on
+    your owner's behalf. Use it when your owner asks you to set up a meeting for them ("put it on
+    my calendar", "set up a meeting with ... for me"). It works only for your verified owner and
+    only when this installation has a delegate calendar configured; otherwise it refuses and
+    nothing is created.
 
     INVITATIONS ARE SENT AUTOMATICALLY AND CANNOT BE TURNED OFF. Graph documents that creating an
     event with attendees always emails every one of them. So adding an attendee IS sending mail:
@@ -1345,6 +1353,16 @@ def create_event(subject: str, start: str, end: str, attendees: str = "",
     online_meeting=True (default) attaches a Teams join link. To book a room, put its resource
     mailbox address in `attendees` — the room accepts or declines itself from its own free/busy.
     """
+    delegate_mailbox = ""
+    if on_behalf_of_owner:
+        delegate_mailbox = (os.environ.get("HERMES_DELEGATE_CALENDAR") or "").strip()
+        if not delegate_mailbox:
+            return ("EVENT NOT CREATED — this installation has no delegate calendar configured "
+                    "(HERMES_DELEGATE_CALENDAR), so you cannot book on your owner's calendar. "
+                    "Offer to create it on your own calendar and invite them instead.")
+        if _caller_tier() != "owner":
+            return ("EVENT NOT CREATED — only your verified owner can ask you to book on their "
+                    "calendar. Nothing was scheduled and nobody was invited.")
     if (attendees or "").strip() or (optional_attendees or "").strip():
         denied = _action_policy_guard("M365_OUTBOUND_POLICY", "meeting invitations")
         if denied:
@@ -1372,7 +1390,9 @@ def create_event(subject: str, start: str, end: str, attendees: str = "",
         payload["isOnlineMeeting"] = True
         payload["onlineMeetingProvider"] = "teamsForBusiness"
 
-    r = _graph("POST", _me("events"), payload)
+    path = (f"/users/{urllib.parse.quote(delegate_mailbox)}/calendar/events"
+            if delegate_mailbox else _me("events"))
+    r = _graph("POST", path, payload)
     if r.startswith("ERROR"):
         return ("EVENT NOT CREATED — nothing was scheduled and nobody was invited. Do not tell "
                 f"anyone a meeting exists.\n{r}")
@@ -1385,7 +1405,9 @@ def create_event(subject: str, start: str, end: str, attendees: str = "",
     join = (ev.get("onlineMeeting") or {}).get("joinUrl") or ""
     started = ev.get("start") or {}
     return (f"EVENT CREATED. id={ev.get('id', '')}\n"
-            f"subject={ev.get('subject', '')}\n"
+            + (f"calendar=your owner's ({delegate_mailbox}), booked as their delegate; they are the organiser\n"
+               if delegate_mailbox else "")
+            + f"subject={ev.get('subject', '')}\n"
             f"start={started.get('dateTime', '')} {started.get('timeZone', '')}\n"
             f"invitations sent to: {invited}\n"
             + (f"Teams join link: {join}\n" if join else "")
