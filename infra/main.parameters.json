@@ -16,6 +16,9 @@
     },
     "modelVersion": {
       "value": "${FOUNDRY_MODEL_VERSION}"
+    },
+    "resourceBaseName": {
+      "value": "${HERMES_RESOURCE_BASE_NAME=}"
     }
   }
 }

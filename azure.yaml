@@ -10,7 +10,6 @@ infra:
     deploymentPrincipalId: ${AZURE_PRINCIPAL_ID}
     modelName: ${FOUNDRY_MODEL_NAME}
     modelVersion: ${FOUNDRY_MODEL_VERSION}
-    resourceBaseName: ${HERMES_RESOURCE_BASE_NAME}
 
 hooks:
   preprovision:
