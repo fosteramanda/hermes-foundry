@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <RootNamespace>HelloWorldA365</RootNamespace>
@@ -17,6 +17,8 @@
 		<PackageReference Include="Microsoft.Agents.A365.Observability.Runtime" Version="1.0.0" />
 		<PackageReference Include="Microsoft.Agents.A365.Observability.Hosting" Version="1.0.0" />
 		<PackageReference Include="Microsoft.Agents.A365.Notifications" Version="1.0.0" />
+		<PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="9.0.11" />
+		<PackageReference Include="Microsoft.Teams.Apps" Version="2.2.1" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -48,8 +50,8 @@
 		<PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.23.0" />
 		<!-- Native Entra Agent OBO / Agent User FIC support. Routines identify the child Agent
 		     Identity and its paired Agent User; Microsoft.Identity.Web owns all token exchanges. -->
-		<PackageReference Include="Microsoft.Identity.Web.AgentIdentities" Version="4.14.2" />
-		<PackageReference Include="Microsoft.Identity.Web.TokenCache" Version="4.14.2" />
+		<PackageReference Include="Microsoft.Identity.Web.AgentIdentities" Version="4.16.1" />
+		<PackageReference Include="Microsoft.Identity.Web.TokenCache" Version="4.16.1" />
 		<!-- Responses protocol server. Routines can only invoke an agent through the responses or
 		     invocations protocol, and this sample ships activity-only, so routines could never
 		     target it. Ships lib/net8.0 as well as net10.0, so it resolves fine on our net9.0. -->

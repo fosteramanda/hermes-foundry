@@ -566,8 +566,18 @@ credentials.
 
 The current tool surface covers mail, calendar, OneDrive create/read/search/share, Word and Excel
 creation, in-place Word editing, PDF generation, web search/fetch, durable owner memory, and Foundry
-Routine creation/list/removal. Teams uploads are downloaded using the recipient Agent User's access,
-and long tool runs update one progress activity before posting the final answer.
+Routine creation/list/removal. Teams uploads are downloaded using the recipient Agent User's access.
+
+In Teams, a turn that runs tools shows Teams' native chain of thought ("Plans and steps for Teams
+agents", public preview). The edge sends every Plan call through the Teams SDK's `Plan` class
+(Microsoft.Teams.Apps 2.2.1) with the Agent User's own token for `https://botapi.skype.com/.default`.
+The Plan hangs under Hermes's first message ("Working on your request..."), each tool joins as a
+step when it starts and is marked done when it finishes, and the answer completes the Plan, so
+Teams shows "Reasoned for N seconds" on the answer. A turn that runs no tool sends no Plan; its
+first message becomes the answer. If Teams refuses a Plan (for example 403 "Plan is not enabled
+for this conversation"), the edge logs `plan.refused` and goes back to editing the first message
+with each tool step. Set `HERMES_TEAMS_PLAN=false` on the agent version to switch Plans off and
+restore the earlier progress message exactly.
 
 ### Authoritative capability paths
 

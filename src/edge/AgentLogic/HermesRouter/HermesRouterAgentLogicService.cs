@@ -1029,6 +1029,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
         public int FailedUpdates { get; set; }
         public int Count => _seen.Count;
+        public string CurrentCallId => _currentCallId;
+        public string CurrentLabel => _currentLabel;
+        public bool CurrentCompleted => _currentCompleted;
 
         public bool Apply(string callId, string tool, string label, string emoji, string status)
         {
@@ -1145,6 +1148,75 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     }
 
     /// <summary>
+    /// Show a tool step: as a Teams Plan step when Plans are on and Teams accepts them, otherwise
+    /// by editing the progress message as before.
+    /// </summary>
+    private async Task ShowToolProgressAsync(ITurnContext turnContext, ToolProgressState progress,
+        CancellationToken ct)
+    {
+        var plan = await EnsureTeamsPlanAsync(turnContext, ct);
+        if (plan != null && !plan.Broken)
+        {
+            if (progress.CurrentCompleted)
+                await plan.StepCompletedAsync(progress.CurrentCallId, ct);
+            else
+                await plan.StepStartedAsync(progress.CurrentCallId, progress.CurrentLabel, ct);
+
+            if (!plan.Broken)
+            {
+                EdgeLog("plan.step", $"steps={progress.Count} completed={progress.CurrentCompleted}");
+                return;
+            }
+            EdgeLog("plan.refused", plan.LastError);
+        }
+        await UpdateProgressActivityAsync(turnContext, progress, ct);
+    }
+
+    /// <summary>
+    /// The turn's Teams Plan, created on the first tool step and anchored to the progress message
+    /// this bot already sent. Null when Plans are off, this is not an agentic Teams turn, or the
+    /// agent user's Teams token cannot be had.
+    /// </summary>
+    private async Task<TeamsPlanBridge> EnsureTeamsPlanAsync(ITurnContext turnContext, CancellationToken ct)
+    {
+        if (turnContext == null || !TeamsPlanBridge.Enabled) return null;
+        var existing = turnContext.Services.Get<TeamsPlanBridge>(TeamsPlanBridge.StateKey);
+        if (existing != null) return existing;
+        if (turnContext.Services.Get<string>(TeamsPlanBridge.StateKey + ".tried") != null) return null;
+        turnContext.Services.Set(TeamsPlanBridge.StateKey + ".tried", "1");
+
+        var anchor = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
+        if (string.IsNullOrWhiteSpace(anchor) || _userAuth == null
+            || string.IsNullOrWhiteSpace(turnContext.Activity?.ServiceUrl)
+            || string.IsNullOrWhiteSpace(turnContext.Activity?.Conversation?.Id))
+        {
+            EdgeLog("plan.skip", $"anchor={!string.IsNullOrWhiteSpace(anchor)} userAuth={_userAuth != null}");
+            return null;
+        }
+
+        try
+        {
+            var token = await _userAuth.ExchangeTurnTokenAsync(
+                turnContext, "agentic",
+                exchangeScopes: new List<string> { TeamsPlanBridge.TeamsScope });
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                EdgeLog("plan.skip", "no Teams token for the agent user");
+                return null;
+            }
+            var bridge = TeamsPlanBridge.Create(new Uri(turnContext.Activity.ServiceUrl),
+                turnContext.Activity.Conversation.Id, anchor, token);
+            turnContext.Services.Set(TeamsPlanBridge.StateKey, bridge);
+            return bridge;
+        }
+        catch (Exception ex)
+        {
+            EdgeLog("plan.setup.failed", $"type={ex.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Replace the acknowledgement that this bot sent at the start of an Agent 365 Teams turn.
     /// Failures are decoration-only: the final result is always sent as a separate activity.
     /// </summary>
@@ -1234,6 +1306,10 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             {
                 turnContext.StreamingResponse.QueueTextChunk(reply);
             }
+            else if (await DeliverWithTeamsPlanAsync(turnContext, reply, ct))
+            {
+                isStreamedMessageTurn = false;
+            }
             else
             {
                 await turnContext.SendActivityAsync(MessageFactory.Text(reply), ct);
@@ -1251,6 +1327,45 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         {
             EdgeLog("reply.FAILED", $"type={ex.GetType().Name}");
             throw;
+        }
+    }
+
+    /// <summary>
+    /// With Teams Plans on: complete the turn's Plan with the answer, or, when no Plan ran, turn the
+    /// progress message into the answer so the chat holds one reply and no "Finished" bubble.
+    /// Returns false when the caller should send the answer as a new message.
+    /// </summary>
+    private async Task<bool> DeliverWithTeamsPlanAsync(ITurnContext turnContext, string reply,
+        CancellationToken ct)
+    {
+        if (!TeamsPlanBridge.Enabled || turnContext == null) return false;
+
+        var plan = turnContext.Services.Get<TeamsPlanBridge>(TeamsPlanBridge.StateKey);
+        if (plan is { Started: true, Broken: false })
+        {
+            if (await plan.CompleteAsync(reply, ct))
+            {
+                EdgeLog("plan.completed", $"chars={reply?.Length ?? 0} with_plan=true");
+                return true;
+            }
+            EdgeLog("plan.complete.refused", plan.LastError);
+            return false;
+        }
+
+        var anchor = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
+        if (string.IsNullOrWhiteSpace(anchor)) return false;
+        try
+        {
+            var replacement = MessageFactory.Text(reply);
+            replacement.Id = anchor;
+            await turnContext.UpdateActivityAsync(replacement, ct);
+            EdgeLog("reply.in.progress.message", $"chars={reply?.Length ?? 0} with_plan=false");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            EdgeLog("reply.in.progress.message.failed", $"type={ex.GetType().Name}");
+            return false;
         }
     }
 
@@ -1639,7 +1754,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                         var changed = progress.Apply(callId, tool, label, emoji, status);
                         EdgeLog("tool.progress", $"{tool} status={status} tools={progress.Count}");
                         if (changed)
-                            await UpdateProgressActivityAsync(turnContext, progress, ct);
+                            await ShowToolProgressAsync(turnContext, progress, ct);
                     }
                     catch (Exception ex)
                     {
@@ -1697,10 +1812,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 }
             }
 
-            // The progress activity is cosmetic. Force its final state before ReplyAsync sends the
-            // independent result, but never let an edit failure change the result itself.
-            await UpdateProgressActivityAsync(turnContext, progress, ct, finished: true,
-                failed: streamFailed || reply.Length == 0);
+            // The progress activity is cosmetic. With Teams Plans on, ReplyAsync completes the Plan
+            // or turns the progress message into the answer, so it is never left saying "Finished".
+            // With Plans switched off, force its final state as before.
+            if (!TeamsPlanBridge.Enabled)
+                await UpdateProgressActivityAsync(turnContext, progress, ct, finished: true,
+                    failed: streamFailed || reply.Length == 0);
             EdgeLog("hermes.stream.read", $"tools={progress.Count} chars={reply.Length}");
             return reply.Length == 0 ? "The agent completed without returning a text response." : reply.ToString();
         }
