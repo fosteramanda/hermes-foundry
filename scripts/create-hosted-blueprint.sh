@@ -201,6 +201,11 @@ env = {
     "IdentitySignKey": identity_key,
     "RoutineBindingSignKey": routine_key,
     "AgentBlueprintId": blueprint_id,
+    # The edge's Teams connection (appsettings.json ServiceConnection) ships with an empty ClientId
+    # and a {{BOT_TENANT_ID}} placeholder. Without these, every Teams reply fails with
+    # "ClientId is required" even though messages arrive.
+    "Connections__ServiceConnection__Settings__ClientId": blueprint_id,
+    "Connections__ServiceConnection__Settings__AuthorityEndpoint": "https://login.microsoftonline.com/" + tenant,
     "M365_WRITE_POLICY": write_policy,
     "M365_OUTBOUND_POLICY": outbound_policy,
 }

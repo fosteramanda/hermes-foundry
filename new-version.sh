@@ -227,6 +227,11 @@ for obsolete in (
     "Connections__BotTokenServiceConnection__Settings__FederatedClientId",
 ):
     env.pop(obsolete, None)
+# Installs created before the Teams connection settings were added have an edge that cannot reply.
+if env.get("AgentBlueprintId") and env.get("AgentTenantId"):
+    env.setdefault("Connections__ServiceConnection__Settings__ClientId", env["AgentBlueprintId"])
+    env.setdefault("Connections__ServiceConnection__Settings__AuthorityEndpoint",
+                   "https://login.microsoftonline.com/" + env["AgentTenantId"])
 env["MODEL_DEPLOYMENT_NAME"] = sys.argv[3]
 env["FALLBACK_MODEL_DEPLOYMENT_NAME"] = sys.argv[4]
 env["AZURE_FOUNDRY_BASE_URL"] = sys.argv[5]
