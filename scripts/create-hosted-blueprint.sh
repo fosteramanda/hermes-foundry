@@ -181,7 +181,7 @@ python3 - "$RESOLVED_IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$MODEL_PRIORITY"
   "$IDENTITY_SIGN_KEY" "$ROUTINE_BINDING_SIGN_KEY" "$IDLE_TIMEOUT_SECONDS" \
   "$BLUEPRINT_ID" "$MAIB_NAME" "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY" \
   > "$WORK/v1.json" <<'PY'
-import json, sys
+import json, os, sys
 (image, primary, fallback, priority, snapshot, allow, project, tenant, agent,
  identity_key, routine_key, idle, blueprint_id, blueprint_name, write_policy,
  outbound_policy) = sys.argv[1:]
@@ -208,6 +208,8 @@ env = {
     "Connections__ServiceConnection__Settings__AuthorityEndpoint": "https://login.microsoftonline.com/" + tenant,
     "M365_WRITE_POLICY": write_policy,
     "M365_OUTBOUND_POLICY": outbound_policy,
+    # gpt-6.1-sol (the default model) rejects tools plus reasoning_effort on /chat/completions.
+    "FOUNDRY_API_MODE": os.environ.get("FOUNDRY_API_MODE", "codex_responses"),
 }
 if allow:
     env["MODEL_ALLOWED_DEPLOYMENTS"] = allow

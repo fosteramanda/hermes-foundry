@@ -9,6 +9,9 @@ import urllib.request
 
 DEFAULT_ENDPOINT = 'https://inference-api.nousresearch.com/v1'
 PROVIDERS = {'nous', 'azure-foundry'}
+# Wire format for Foundry deployments. Reasoning models such as gpt-6.1-sol reject tools with
+# reasoning_effort on /chat/completions and need the Responses API (codex_responses).
+FOUNDRY_API_MODES = {'chat_completions', 'codex_responses'}
 
 
 def settings(env=None):
@@ -44,20 +47,25 @@ def model_configuration(env=None):
         for key in ('MODEL_DEPLOYMENT_NAME', 'FALLBACK_MODEL_DEPLOYMENT_NAME', 'AZURE_FOUNDRY_BASE_URL'):
             if not env.get(key):
                 raise ValueError(key + ' is required when Foundry inference is enabled')
+    api_mode = env.get('FOUNDRY_API_MODE', '').strip().lower()
+    if api_mode and api_mode not in FOUNDRY_API_MODES:
+        raise ValueError('FOUNDRY_API_MODE must be chat_completions or codex_responses')
+    foundry_mode = {'api_mode': api_mode} if api_mode else {}
     if provider == 'nous':
         model = {'default': models[0], 'provider': 'nous', 'base_url': endpoint}
         # No provider-crossing failover: billing and data routing remain explicit.
         fallback = [{'provider': 'nous', 'model': m, 'base_url': endpoint} for m in models[1:]]
     else:
         model = {'default': env['MODEL_DEPLOYMENT_NAME'], 'provider': 'azure-foundry',
-                 'base_url': env['AZURE_FOUNDRY_BASE_URL'], 'auth_mode': 'entra_id'}
+                 'base_url': env['AZURE_FOUNDRY_BASE_URL'], 'auth_mode': 'entra_id', **foundry_mode}
         priority = env.get('MODEL_PRIORITY', env['MODEL_DEPLOYMENT_NAME'] + ',' + env['FALLBACK_MODEL_DEPLOYMENT_NAME'])
         for name in dict.fromkeys(priority.split(',') + [env['FALLBACK_MODEL_DEPLOYMENT_NAME']]):
             name = name.strip()
             if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', name):
                 raise ValueError('Invalid Foundry model deployment name')
             fallback.append({'provider': 'azure-foundry', 'model': name,
-                             'base_url': env['AZURE_FOUNDRY_BASE_URL'], 'auth_mode': 'entra_id'})
+                             'base_url': env['AZURE_FOUNDRY_BASE_URL'], 'auth_mode': 'entra_id',
+                             **foundry_mode})
     # Automatic fallback remains empty: a conversation can switch providers independently of
     # the startup default. A global fallback chain would send switched turns to the wrong account.
     return {'model': model, 'fallback_providers': fallback if len(allowed) == 1 else []}
