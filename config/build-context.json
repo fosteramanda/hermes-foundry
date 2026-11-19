@@ -6,6 +6,7 @@
   "src/edge/AgentLogic/A365AgentApplication.cs",
   "src/edge/AgentLogic/AgentInstructions.cs",
   "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs",
+  "src/edge/AgentLogic/HermesRouter/TeamsPlanBridge.cs",
   "src/edge/AgentLogic/IAgentLogicService.cs",
   "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicService.cs",
   "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicServiceFactory.cs",
