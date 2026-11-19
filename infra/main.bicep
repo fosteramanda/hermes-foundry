@@ -23,8 +23,8 @@ param modelVersion string = '2026-09-29'
 
 @minValue(1)
 @maxValue(1000)
-@description('Initial Global Standard model capacity in thousands of tokens per minute.')
-param modelCapacity int = 5
+@description('Initial Global Standard model capacity in thousands of tokens per minute. One Hermes turn sends about 8K tokens per model call, so 5 cannot answer at all.')
+param modelCapacity int = 50
 
 @description('Tags applied to the resources created by this template.')
 param tags object = {
