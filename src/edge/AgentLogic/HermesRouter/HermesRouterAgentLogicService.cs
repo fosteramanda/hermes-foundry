@@ -233,7 +233,11 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     }
 
 #pragma warning disable IDE0051 // kept for re-enablement
-    private async Task<string> MintAgentGraphTokenAsync()
+    private Task<string> MintAgentGraphTokenAsync() =>
+        MintAgentTokenAsync("https://graph.microsoft.com/.default");
+
+    /// <summary>The agent user's own token for one resource, minted through the blueprint.</summary>
+    private async Task<string> MintAgentTokenAsync(string scope)
     {
         if (_tokenHelper == null || _agent == null) return null;
         try
@@ -243,14 +247,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 _agent.AgentId.ToString(),                      // agent app instance
                 string.IsNullOrEmpty(_agent.EmailId) ? _agent.UserId.ToString() : _agent.EmailId,
                 _agent.TenantId.ToString(),
-                new[] { "https://graph.microsoft.com/.default" });
+                new[] { scope });
         }
         catch (Exception ex)
         {
             _logger.LogError(
-                "Could not mint the agent's Graph token; type={ExceptionType}; this turn runs without M365 tools",
-                ex.GetType().Name);
-            EdgeLog("token.error", $"type={ex.GetType().Name}");
+                "Could not mint the agent's token for {Scope}; type={ExceptionType}",
+                scope, ex.GetType().Name);
+            EdgeLog("token.error", $"scope={scope} type={ex.GetType().Name}");
             return null;
         }
     }
@@ -1196,9 +1200,20 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
         try
         {
-            var token = await _userAuth.ExchangeTurnTokenAsync(
-                turnContext, "agentic",
-                exchangeScopes: new List<string> { TeamsPlanBridge.TeamsScope });
+            string token = null;
+            try
+            {
+                token = await _userAuth.ExchangeTurnTokenAsync(
+                    turnContext, "agentic",
+                    exchangeScopes: new List<string> { TeamsPlanBridge.TeamsScope });
+            }
+            catch (Exception ex)
+            {
+                EdgeLog("plan.token.exchange.error", $"type={ex.GetType().Name}");
+            }
+            // The turn exchange returns null on this platform (the Graph token takes the same
+            // fallback); mint the agent user's own Teams token through the blueprint instead.
+            token ??= await MintAgentTokenAsync(TeamsPlanBridge.TeamsScope);
             if (string.IsNullOrWhiteSpace(token))
             {
                 EdgeLog("plan.skip", "no Teams token for the agent user");
