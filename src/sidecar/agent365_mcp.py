@@ -106,6 +106,11 @@ mcp = FastMCP(
         ".docx in your OneDrive. Do not open the browser-based Word editor: it requires an "
         "interactive sign-in that an autopilot cannot complete. edit_docx downloads the OOXML, "
         "changes it locally, and uploads it back to the same item. "
+        "DOCUMENT LINKS: when a reply points to a Word document, Excel workbook or PowerPoint deck, "
+        "give it as a Markdown link whose text is the document's title, never a bare URL and never "
+        "'here' or 'link'. Lead with it and keep the reply short, for example "
+        "'Done: [Q3 Planning Notes](url)', with at most one more sentence. create_docx, edit_docx, "
+        "create_xlsx and create_pptx return a LINK FOR YOUR REPLY line; use it exactly. "
         "TEAMS UPLOADS: files attached to the current Teams message are temporary and are not in "
         "your OneDrive. When the turn prompt lists an upload path, call read_uploaded_file on that "
         "exact path before discussing its contents. Never guess from the filename or try to open "
@@ -1961,6 +1966,22 @@ def _pptx_runs(paragraph, text: str, size_pt: int = 18) -> None:
             r.font.name = name
 
 
+def _office_link_line(graph_item: str) -> str:
+    """A ready Markdown link for the reply, titled with the file name, from a Graph driveItem.
+
+    Teams shows a bare OneDrive address as a long unreadable string, so the tool hands the model the
+    exact link to use. Returns "" when Graph did not return a webUrl."""
+    try:
+        item = json.loads(graph_item)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(item, dict) or not item.get("webUrl"):
+        return ""
+    stem = os.path.splitext(str(item.get("name") or ""))[0].strip() or "Open the document"
+    title = stem.replace("[", "\\[").replace("]", "\\]")
+    return f"\nLINK FOR YOUR REPLY: [{title}]({item['webUrl']})"
+
+
 @mcp.tool()
 def create_docx(path: str, content: str, title: str = "") -> str:
     """Create a REAL Word document (.docx) in the agent's OWN OneDrive.
@@ -2007,7 +2028,8 @@ def create_docx(path: str, content: str, title: str = "") -> str:
     res = _graph("PUT", _me(f"drive/root:/{_dp(path)}:/content"), blob, raw_body=True)
     if res.startswith("ERROR"):
         return f"DOCX NOT CREATED — the upload failed. Do not say the document exists.\n{res}"
-    return f"DOCX CREATED at {path} ({len(blob)} bytes, real Word format).\n{res}"
+    return (f"DOCX CREATED at {path} ({len(blob)} bytes, real Word format)."
+            f"{_office_link_line(res)}\n{res}")
 
 
 @mcp.tool()
@@ -2072,7 +2094,8 @@ def edit_docx(item_id: str = "", path: str = "", append_content: str = "",
     if result.startswith("ERROR"):
         return f"DOCX NOT CHANGED — upload failed; the original remains authoritative.\n{result}"
     return (f"DOCX UPDATED — {name}; replacements={replacements}, paragraphs_appended={appended}, "
-            f"bytes={len(updated)}. The existing OneDrive item was updated in place.\n{result}")
+            f"bytes={len(updated)}. The existing OneDrive item was updated in place."
+            f"{_office_link_line(result)}\n{result}")
 
 
 @mcp.tool()
@@ -2128,7 +2151,8 @@ def create_xlsx(path: str, csv_content: str, sheet_name: str = "Sheet1") -> str:
     res = _graph("PUT", _me(f"drive/root:/{_dp(path)}:/content"), blob, raw_body=True)
     if res.startswith("ERROR"):
         return f"XLSX NOT CREATED — the upload failed. Do not say the workbook exists.\n{res}"
-    return f"XLSX CREATED at {path} ({len(blob)} bytes, real Excel format, {len(rows)} rows).\n{res}"
+    return (f"XLSX CREATED at {path} ({len(blob)} bytes, real Excel format, {len(rows)} rows)."
+            f"{_office_link_line(res)}\n{res}")
 
 
 @mcp.tool()
@@ -2243,7 +2267,7 @@ def create_pptx(path: str, content: str, title: str = "") -> str:
     if res.startswith("ERROR"):
         return f"PPTX NOT CREATED — the upload failed. Do not say the deck exists.\n{res}"
     return (f"PPTX CREATED at {path} ({len(blob)} bytes, real PowerPoint format, "
-            f"{len(prs.slides)} slides).\n{res}")
+            f"{len(prs.slides)} slides).{_office_link_line(res)}\n{res}")
 
 
 @mcp.tool()

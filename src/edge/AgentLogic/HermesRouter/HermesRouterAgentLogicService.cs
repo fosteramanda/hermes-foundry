@@ -1298,6 +1298,10 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             _logger.LogError("Hermes turn failed; type={ExceptionType}", ex.GetType().Name);
             reply = $"I couldn't complete that: {ex.GetType().Name}.";
         }
+        if (string.Equals(turnContext.Activity?.ChannelId, Channels.Msteams,
+                StringComparison.OrdinalIgnoreCase)
+            && turnContext.Activity?.Type == ActivityTypes.Message)
+            reply = OfficeLinkFormatter.Format(reply);
         // The return leg is the hop we could not see. Log the outcome explicitly, including the
         // exception, so a failure to deliver stops looking like "the agent never answered".
         try
