@@ -211,7 +211,10 @@ internal sealed class TeamsPlanBridge
             {
                 Id = "why",
                 Version = 1,
-                Title = Trim(string.IsNullOrWhiteSpace(why) ? "Answered from what I already know" : why),
+                // The row name must fit without "..."; the one or two sentences on why go under
+                // its arrow as the description.
+                Title = "Answered from what I know",
+                Description = string.IsNullOrWhiteSpace(why) ? null : why.Trim(),
                 Status = PlanStepStatuses.Completed
             };
             await _plan.StartAsync([step], ct);

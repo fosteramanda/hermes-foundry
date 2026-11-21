@@ -185,6 +185,13 @@ public sealed class StepNamer
         return string.Join('.', labels);
     }
 
+    private static readonly HashSet<string> SentenceStarters = new(StringComparer.Ordinal)
+    {
+        "Top", "Latest", "Biggest", "Best", "Major", "Main", "Recent", "Current", "Breaking", "Today's",
+        "Todays", "Global", "World", "News", "Weekly", "Daily", "Upcoming", "New", "Key", "Important",
+        "Most", "Big", "Largest", "Leading", "Headline", "Headlines",
+    };
+
     private static readonly HashSet<string> Stop = new(StringComparer.OrdinalIgnoreCase)
     {
         "a", "an", "and", "are", "about", "as", "at", "be", "by", "can", "could", "do", "does", "find",
@@ -200,9 +207,10 @@ public sealed class StepNamer
             .Select(w => w.Trim('"', '\'', '?', '.', ',', '!', ':', ';', '(', ')'))
             .Where(w => w.Length > 0 && !Stop.Contains(w.Replace("'", "")))
             .ToList();
-        // A capital that only starts the sentence ("Top world news") reads oddly mid-name.
-        if (words.Count > 0 && words[0].Length > 1 && char.IsUpper(words[0][0]) && words[0][1..].All(char.IsLower))
-            words[0] = char.ToLowerInvariant(words[0][0]) + words[0][1..];
+        // A capital that only starts the sentence ("Top world news") reads oddly mid-name; names
+        // such as "Reuters" keep theirs.
+        if (words.Count > 0 && SentenceStarters.Contains(words[0]))
+            words[0] = words[0].ToLowerInvariant();
         return string.Join(' ', words);
     }
 

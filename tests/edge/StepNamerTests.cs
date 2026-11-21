@@ -56,6 +56,8 @@ public sealed class StepNamerTests
     {
         var (running, _) = new StepNamer().Name("web_search", Args(("query", "Top world news this week")));
         Assert.Equal("Searching for top world news", running);
+        Assert.Equal("Searching for Reuters AP",
+            new StepNamer().Name("web_search", Args(("query", "Reuters AP"))).Running);
     }
 
     [Theory]
