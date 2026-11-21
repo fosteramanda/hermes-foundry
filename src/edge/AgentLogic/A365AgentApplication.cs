@@ -94,6 +94,15 @@ public class A365AgentApplication : AgentApplication
             await agentService.HandleCommentNotificationAsync(turnContext, turnState, agentNotificationActivity);
         }, autoSignInHandlers: new[] { AgenticIdAuthHandler });
 
+        // Thumbs up and down on Hermes's answers. Teams sends the reaction as an invoke; answer it so
+        // the client shows it as received. Only the reaction is logged, never the comment text.
+        OnFeedbackLoop(async (turnContext, turnState, feedback, cancellationToken) =>
+        {
+            _logger.LogInformation("Feedback received; reaction={Reaction}",
+                feedback?.ActionValue?.Reaction ?? "none");
+            await Task.CompletedTask;
+        });
+
         OnActivity(ActivityTypes.Message, async (turnContext, turnState, cancellationToken) =>
         {
             var streamingStarted = false;
@@ -133,18 +142,10 @@ public class A365AgentApplication : AgentApplication
                     && AgenticAuthorization.IsAgenticRequest(turnContext);
                 if (isAgenticTeams)
                 {
-                    var progressActivity = await turnContext.SendActivityAsync(
-                        MessageFactory.Text("Working on your request..."),
-                        cancellationToken);
-                    // Keep only the channel-assigned ID for this turn. HermesRouter uses it to edit
-                    // this bot-owned activity as Hermes emits tool lifecycle events. This is NOT a
-                    // streaming handle and is never used for the final reply.
-                    if (!string.IsNullOrWhiteSpace(progressActivity?.Id))
-                    {
-                        turnContext.Services.Set(
-                            HermesRouter.HermesRouterAgentLogicService.ProgressActivityIdStateKey,
-                            progressActivity.Id);
-                    }
+                    // The typing indicator is the first thing the person sees, every time. No
+                    // acknowledgement message: the first message, when there is one, restates the
+                    // task and is posted by HermesRouter once Hermes starts work that needs tools.
+                    TypingLoop.Start(turnContext, cancellationToken);
                 }
                 else
                 {
@@ -201,6 +202,7 @@ public class A365AgentApplication : AgentApplication
             }
             finally
             {
+                TypingLoop.StopFor(turnContext);
                 if (streamingStarted)
                 {
                     try

@@ -5,6 +5,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AgentNotification;
 using HelloWorldA365.Models;
 using HelloWorldA365.Services;
@@ -70,7 +71,6 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         AutomaticDecompression = DecompressionMethods.All
     }) { Timeout = TimeSpan.FromSeconds(45) };
     private const string AgentToAgentDisabledMessage = "Agent-to-agent communication is disabled";
-    public const string ProgressActivityIdStateKey = "Hermes.ProgressActivityId";
 
     private readonly AgentMetadata _agent;
     private readonly ILogger _logger;
@@ -381,6 +381,17 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         // against the Foundry project's deployed chat models; a user cannot name an arbitrary
         // backend or bypass the administrator's allow-list.
         var callerSessionKey = CallerSessionKey(turnContext);
+        if (caller.tier == "owner"
+            && string.Equals(turnContext.Activity.ChannelId, Channels.Msteams, StringComparison.OrdinalIgnoreCase))
+        {
+            var cotReply = HandleCotCommand(text);
+            if (cotReply != null)
+            {
+                await ReplyToControlCommandAsync(turnContext, cotReply, cancellationToken);
+                EdgeLog("cot.command", cotReply);
+                return;
+            }
+        }
         if (string.Equals(turnContext.Activity.ChannelId, Channels.Msteams,
                 StringComparison.OrdinalIgnoreCase)
             && _modelPolicy is not null)
@@ -886,6 +897,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             return;
         }
 
+        reply = TakeWhy(reply, out _);
+
         // Seal BEFORE attempting the outbound Activity. This intentionally preserves the existing
         // at-most-once policy: if the channel send has an uncertain outcome, a redelivery must not
         // send a second reply and risk mailbox restrictions. If the seal itself cannot be written,
@@ -1022,182 +1035,174 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// <summary>A file the sidecar spooled during this turn, to go out on the reply.</summary>
     private sealed record PendingAttachment(string Path, string Mime, string Name);
 
-    /// <summary>Turn-local rendering state for the single bot-owned Teams progress activity.</summary>
-    private sealed class ToolProgressState
+    /// <summary>
+    /// What Teams shows while Hermes works on one message, chosen by the shape of the work. No tool
+    /// call (pattern 1): typing, then the answer. Work that needs tools (pattern 2): typing, one
+    /// first message restating the task (from start_task), the steps as a Teams Plan under it, then
+    /// the answer as a new message. Nothing is ever edited, so Teams never shows "Edited".
+    /// </summary>
+    private sealed class WorkLine
     {
-        private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
-        private string _currentCallId;
-        private string _currentLabel;
-        private string _currentEmoji;
-        private bool _currentCompleted;
+        public const string StateKey = "Hermes.WorkLine";
+        public readonly StepNamer Names = new();
+        public string FirstMessageId;
+        public TeamsPlanBridge Plan;
+        public bool PlanTried;
+        public int Steps;
 
-        public int FailedUpdates { get; set; }
-        public int Count => _seen.Count;
-        public string CurrentCallId => _currentCallId;
-        public string CurrentLabel => _currentLabel;
-        public bool CurrentCompleted => _currentCompleted;
-
-        public bool Apply(string callId, string tool, string label, string emoji, string status)
+        public static WorkLine For(ITurnContext turnContext)
         {
-            if (IsHiddenProgressTool(tool)) return false;
-            if (string.IsNullOrWhiteSpace(callId))
-                callId = $"{tool}:{Count}";
-
-            if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase))
-            {
-                _seen.Add(callId);
-                _currentCallId = callId;
-                _currentLabel = FriendlyProgressLabel(tool, label);
-                _currentEmoji = FriendlyProgressEmoji(tool, emoji);
-                _currentCompleted = false;
-                return true;
-            }
-
-            if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(callId, _currentCallId, StringComparison.Ordinal)
-                && !_currentCompleted)
-            {
-                _currentCompleted = true;
-                return true;
-            }
-            return false;
-        }
-
-        public string Render(bool finished, bool failed = false)
-        {
-            if (failed) return "⚠ Request stopped";
-            if (finished) return "✓ Finished";
-            if (string.IsNullOrWhiteSpace(_currentLabel)) return "Working on your request...";
-            var marker = _currentCompleted
-                ? "✓"
-                : (string.IsNullOrWhiteSpace(_currentEmoji) ? "⏳" : _currentEmoji);
-            return $"{marker} {_currentLabel}";
-        }
-
-        private static bool IsHiddenProgressTool(string tool)
-        {
-            var name = ToolSuffix(tool);
-            return name is "skill_view" or "skills_list" or "tool_search" or "tool_describe";
-        }
-
-        private static string ToolSuffix(string tool)
-        {
-            if (string.IsNullOrWhiteSpace(tool)) return "working";
-            var marker = tool.LastIndexOf("__", StringComparison.Ordinal);
-            return (marker >= 0 ? tool[(marker + 2)..] : tool).ToLowerInvariant();
-        }
-
-        private static string FriendlyProgressEmoji(string tool, string emitted)
-        {
-            return ToolSuffix(tool) switch
-            {
-                "web_search" or "search_files" or "search_emails" => "🔎",
-                "fetch_url" or "browse_url" or "read_file" or "read_email" => "📖",
-                "create_docx" or "edit_docx" or "create_file" or "write_file" => "📝",
-                "create_xlsx" or "edit_xlsx" => "📊",
-                "create_pptx" or "edit_pptx" => "📽️",
-                "share_file" => "🔗",
-                "send_email" or "reply_email" => "✉️",
-                "create_event" => "📅",
-                "run_code" or "execute_code" or "terminal" => "💻",
-                _ => string.IsNullOrWhiteSpace(emitted) ? "⏳" : emitted,
-            };
-        }
-
-        private static string FriendlyProgressLabel(string tool, string emitted)
-        {
-            var name = ToolSuffix(tool);
-            var preview = (emitted ?? "").Trim();
-            if (preview.Equals(tool, StringComparison.OrdinalIgnoreCase)
-                || preview.Equals(name, StringComparison.OrdinalIgnoreCase))
-            {
-                preview = "";
-            }
-
-            string WithPreview(string action) =>
-                string.IsNullOrWhiteSpace(preview) ? action : $"{action}: {preview}";
-
-            return name switch
-            {
-                "web_search" => WithPreview("Searching for"),
-                "fetch_url" or "browse_url" => WithPreview("Reading"),
-                "search_files" => WithPreview("Searching files for"),
-                "search_emails" => WithPreview("Searching email for"),
-                "read_file" => WithPreview("Reading file"),
-                "read_email" => WithPreview("Reading email"),
-                "create_docx" => WithPreview("Creating Word document"),
-                "edit_docx" => WithPreview("Editing Word document"),
-                "create_xlsx" => WithPreview("Creating spreadsheet"),
-                "edit_xlsx" => WithPreview("Editing spreadsheet"),
-                "create_pptx" => WithPreview("Creating presentation"),
-                "edit_pptx" => WithPreview("Editing presentation"),
-                "create_pdf" => WithPreview("Creating PDF"),
-                "create_file" or "write_file" => WithPreview("Creating file"),
-                "share_file" => WithPreview("Sharing file"),
-                "send_email" => WithPreview("Sending email"),
-                "reply_email" => WithPreview("Replying to email"),
-                "create_event" => WithPreview("Scheduling event"),
-                // Code arguments can contain the complete program. Never echo them into the Teams
-                // progress activity; the user needs an activity label, not a source-code dump.
-                "run_code" or "execute_code" or "terminal" => "Running code",
-                "remember" => "Updating memory",
-                "recall" => "Checking memory",
-                "propose_access_change" => "Preparing access approval",
-                "list_access_permissions" => "Checking approved access",
-                _ => string.IsNullOrWhiteSpace(preview)
-                    ? "Working"
-                    : preview,
-            };
+            var work = turnContext.Services.Get<WorkLine>(StateKey);
+            if (work != null) return work;
+            work = new WorkLine();
+            turnContext.Services.Set(StateKey, work);
+            return work;
         }
     }
 
     /// <summary>
-    /// Show a tool step: as a Teams Plan step when Plans are on and Teams accepts them, otherwise
-    /// by editing the progress message as before.
+    /// How a Plan ends. "b": the answer message completes it. "a2": the answer goes out on its own
+    /// and an empty message after it completes the Plan. "a1": the answer goes out on its own and
+    /// the Plan is stopped. The owner can switch it with "/cot layout a1|a2|b" for the placement test.
     /// </summary>
-    private async Task ShowToolProgressAsync(ITurnContext turnContext, ToolProgressState progress,
+    private static string _cotLayout =
+        (Environment.GetEnvironmentVariable("HERMES_COT_LAYOUT") ?? "b").Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// Reasoning-only answers. "none": typing, then the answer. "late": the answer completes a Plan
+    /// with one done step carrying the why, bound to the person's message and started only when
+    /// the answer is ready, so nothing shows under the person's message while Hermes thinks.
+    /// </summary>
+    private static string _cotReasoned =
+        (Environment.GetEnvironmentVariable("HERMES_COT_REASONED") ?? "none").Trim().ToLowerInvariant();
+
+    /// <summary>Try to start the Plan with no steps when the first message posts, so it can read "Thinking".</summary>
+    private static bool _cotThinkingStart =
+        !string.Equals(Environment.GetEnvironmentVariable("HERMES_COT_THINKING_START"), "false",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static readonly Regex CotCommand = new(
+        @"^\s*(?:<at>[^<]*</at>\s*)?/cot\s+(?<what>layout|reasoned|thinking|status)\s*(?<value>[a-z0-9]*)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Owner-only switches for the chain of thought placement test.</summary>
+    private static string HandleCotCommand(string text)
+    {
+        var m = CotCommand.Match(text ?? "");
+        if (!m.Success) return null;
+        var value = m.Groups["value"].Value.ToLowerInvariant();
+        switch (m.Groups["what"].Value.ToLowerInvariant())
+        {
+            case "layout" when value is "a1" or "a2" or "b":
+                _cotLayout = value;
+                break;
+            case "reasoned" when value is "none" or "late":
+                _cotReasoned = value;
+                break;
+            case "thinking" when value is "on" or "off":
+                _cotThinkingStart = value == "on";
+                break;
+        }
+        return $"Chain of thought: layout {_cotLayout}, reasoning-only {_cotReasoned}, " +
+               $"thinking start {(_cotThinkingStart ? "on" : "off")}.";
+    }
+
+    private static bool IsAgenticTeamsMessage(ITurnContext turnContext) =>
+        turnContext?.Activity != null
+        && turnContext.Activity.Type == ActivityTypes.Message
+        && string.Equals(turnContext.Activity.ChannelId, Channels.Msteams, StringComparison.OrdinalIgnoreCase)
+        && Microsoft.Agents.Builder.App.AgenticAuthorization.IsAgenticRequest(turnContext);
+
+    /// <summary>A tool started or finished in Hermes: post the first message or move the Plan.</summary>
+    private async Task OnToolEventAsync(ITurnContext turnContext, string callId, string tool,
+        string status, IReadOnlyDictionary<string, string> args, CancellationToken ct)
+    {
+        if (!IsAgenticTeamsMessage(turnContext)) return;
+        var work = WorkLine.For(turnContext);
+        var running = string.Equals(status, "running", StringComparison.OrdinalIgnoreCase);
+        if (StepNamer.IsHidden(tool))
+        {
+            if (running && StepNamer.Suffix(tool) == "start_task"
+                && args.TryGetValue("task", out var task))
+                await PostFirstMessageAsync(turnContext, work, task, ct);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(callId)) callId = $"{tool}:{work.Steps}";
+
+        if (running)
+        {
+            var (ing, done) = work.Names.Name(tool, args);
+            // Hermes skipped start_task: the first running step is the closest true sentence.
+            if (work.FirstMessageId == null)
+                await PostFirstMessageAsync(turnContext, work, ing, ct);
+            work.Steps++;
+            var plan = await EnsureTeamsPlanAsync(turnContext, work, ct);
+            if (plan == null || plan.Broken) return;
+            await plan.StepStartedAsync(callId, ing, done, ct);
+            EdgeLog(plan.Broken ? "plan.refused" : "plan.step",
+                plan.Broken ? plan.LastError : $"steps={plan.StepCount} running=true");
+        }
+        else if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            var plan = work.Plan;
+            if (plan == null || plan.Broken) return;
+            await plan.StepCompletedAsync(callId, ct);
+            EdgeLog(plan.Broken ? "plan.refused" : "plan.step",
+                plan.Broken ? plan.LastError : $"steps={plan.StepCount} running=false");
+        }
+    }
+
+    /// <summary>The one first message: posted once, never edited. Typing stops when it posts.</summary>
+    private async Task PostFirstMessageAsync(ITurnContext turnContext, WorkLine work, string sentence,
         CancellationToken ct)
     {
-        var plan = await EnsureTeamsPlanAsync(turnContext, ct);
-        if (plan != null && !plan.Broken)
+        if (work.FirstMessageId != null) return;
+        sentence = string.Join(' ', (sentence ?? "").Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
+        if (string.IsNullOrWhiteSpace(sentence)) return;
+        if (!".!?".Contains(sentence[^1])) sentence += ".";
+        work.FirstMessageId = "";
+        TypingLoop.StopFor(turnContext);
+        try
         {
-            if (progress.CurrentCompleted)
-                await plan.StepCompletedAsync(progress.CurrentCallId, ct);
-            else
-                await plan.StepStartedAsync(progress.CurrentCallId, progress.CurrentLabel, ct);
-
-            if (!plan.Broken)
-            {
-                EdgeLog("plan.step", $"steps={progress.Count} completed={progress.CurrentCompleted}");
-                return;
-            }
-            EdgeLog("plan.refused", plan.LastError);
+            var sent = await turnContext.SendActivityAsync(MessageFactory.Text(sentence), ct);
+            work.FirstMessageId = sent?.Id ?? "";
+            EdgeLog("first.message", $"chars={sentence.Length} id={(string.IsNullOrEmpty(work.FirstMessageId) ? "none" : "ok")}");
         }
-        await UpdateProgressActivityAsync(turnContext, progress, ct);
+        catch (Exception ex)
+        {
+            EdgeLog("first.message.failed", $"type={ex.GetType().Name}");
+            return;
+        }
+        if (!_cotThinkingStart) return;
+        var plan = await EnsureTeamsPlanAsync(turnContext, work, ct);
+        if (plan == null) return;
+        EdgeLog("plan.start.nosteps", await plan.TryStartWithoutStepsAsync(ct));
     }
 
     /// <summary>
-    /// The turn's Teams Plan, created on the first tool step and anchored to the progress message
-    /// this bot already sent. Null when Plans are off, this is not an agentic Teams turn, or the
-    /// agent user's Teams token cannot be had.
+    /// The turn's Teams Plan, anchored to the first message so its work line sits under Hermes's own
+    /// message. Null when Plans are off, there is no first message, or no agent user Teams token.
     /// </summary>
-    private async Task<TeamsPlanBridge> EnsureTeamsPlanAsync(ITurnContext turnContext, CancellationToken ct)
+    private async Task<TeamsPlanBridge> EnsureTeamsPlanAsync(ITurnContext turnContext, WorkLine work,
+        CancellationToken ct)
     {
-        if (turnContext == null || !TeamsPlanBridge.Enabled) return null;
-        var existing = turnContext.Services.Get<TeamsPlanBridge>(TeamsPlanBridge.StateKey);
-        if (existing != null) return existing;
-        if (turnContext.Services.Get<string>(TeamsPlanBridge.StateKey + ".tried") != null) return null;
-        turnContext.Services.Set(TeamsPlanBridge.StateKey + ".tried", "1");
+        if (work.Plan != null) return work.Plan;
+        if (work.PlanTried || string.IsNullOrWhiteSpace(work.FirstMessageId)) return null;
+        work.PlanTried = true;
+        work.Plan = await CreatePlanAsync(turnContext, work.FirstMessageId, ct);
+        return work.Plan;
+    }
 
-        var anchor = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
-        if (string.IsNullOrWhiteSpace(anchor) || _userAuth == null
+    private async Task<TeamsPlanBridge> CreatePlanAsync(ITurnContext turnContext, string replyToId,
+        CancellationToken ct)
+    {
+        if (!TeamsPlanBridge.Enabled || _userAuth == null || string.IsNullOrWhiteSpace(replyToId)
             || string.IsNullOrWhiteSpace(turnContext.Activity?.ServiceUrl)
             || string.IsNullOrWhiteSpace(turnContext.Activity?.Conversation?.Id))
         {
-            EdgeLog("plan.skip", $"anchor={!string.IsNullOrWhiteSpace(anchor)} userAuth={_userAuth != null}");
+            EdgeLog("plan.skip", $"enabled={TeamsPlanBridge.Enabled} anchor={!string.IsNullOrWhiteSpace(replyToId)} userAuth={_userAuth != null}");
             return null;
         }
-
         try
         {
             string token = null;
@@ -1219,10 +1224,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 EdgeLog("plan.skip", "no Teams token for the agent user");
                 return null;
             }
-            var bridge = TeamsPlanBridge.Create(new Uri(turnContext.Activity.ServiceUrl),
-                turnContext.Activity.Conversation.Id, anchor, token);
-            turnContext.Services.Set(TeamsPlanBridge.StateKey, bridge);
-            return bridge;
+            return TeamsPlanBridge.Create(new Uri(turnContext.Activity.ServiceUrl),
+                turnContext.Activity.Conversation.Id, replyToId, token);
         }
         catch (Exception ex)
         {
@@ -1232,33 +1235,100 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     }
 
     /// <summary>
-    /// Replace the acknowledgement that this bot sent at the start of an Agent 365 Teams turn.
-    /// Failures are decoration-only: the final result is always sent as a separate activity.
+    /// Send the answer in Teams as a new message: the asker's @mention, the answer, thumbs up and
+    /// down. With a Plan running it ends the Plan the way the current layout says.
     /// </summary>
-    private async Task UpdateProgressActivityAsync(
-        ITurnContext turnContext,
-        ToolProgressState progress,
-        CancellationToken ct,
-        bool finished = false,
-        bool failed = false)
+    private async Task<bool> DeliverTeamsAnswerAsync(ITurnContext turnContext, string reply, string why,
+        CancellationToken ct)
     {
-        if (turnContext == null || progress == null || progress.FailedUpdates >= 3) return;
-        var activityId = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
-        if (string.IsNullOrWhiteSpace(activityId)) return;
+        if (!IsAgenticTeamsMessage(turnContext)) return false;
+        TypingLoop.StopFor(turnContext);
+        var work = turnContext.Services.Get<WorkLine>(WorkLine.StateKey);
+        var plan = work?.Plan;
+        if (plan is { Started: true, Broken: false })
+        {
+            switch (_cotLayout)
+            {
+                case "a1":
+                    await SendTeamsAnswerAsync(turnContext, reply, ct);
+                    EdgeLog("plan.stopped.after.answer",
+                        await plan.StopAsync(ct) ? $"steps={plan.StepCount} layout=a1" : plan.LastError);
+                    return true;
+                case "a2":
+                    await SendTeamsAnswerAsync(turnContext, reply, ct);
+                    EdgeLog("plan.completed.after.answer",
+                        await plan.CompleteEmptyAsync(ct) ? $"steps={plan.StepCount} layout=a2" : plan.LastError);
+                    return true;
+                default:
+                    if (await plan.CompleteAsync(TeamsAnswerInput(turnContext, reply), ct))
+                    {
+                        EdgeLog("plan.completed", $"chars={reply?.Length ?? 0} steps={plan.StepCount} with_plan=true layout=b");
+                        return true;
+                    }
+                    EdgeLog("plan.complete.refused", plan.LastError);
+                    break;
+            }
+        }
+        else if (work?.FirstMessageId == null && _cotReasoned == "late")
+        {
+            var bridge = await CreatePlanAsync(turnContext, turnContext.Activity.Id, ct);
+            var title = string.IsNullOrWhiteSpace(why) ? "Answered from what I already know" : why;
+            if (bridge != null
+                && await bridge.ReasonedOnlyAsync(title, why, TeamsAnswerInput(turnContext, reply), ct))
+            {
+                EdgeLog("plan.completed", $"chars={reply?.Length ?? 0} steps=1 with_plan=true reasoned_only=true why={!string.IsNullOrWhiteSpace(why)}");
+                return true;
+            }
+            EdgeLog("plan.reasoned.refused", bridge?.LastError ?? "no plan");
+        }
+        await SendTeamsAnswerAsync(turnContext, reply, ct);
+        EdgeLog("answer.sent", $"chars={reply?.Length ?? 0} first_message={work?.FirstMessageId != null} with_plan=false");
+        return true;
+    }
 
-        try
+    private static async Task SendTeamsAnswerAsync(ITurnContext turnContext, string reply, CancellationToken ct)
+    {
+        var from = turnContext.Activity?.From;
+        var name = from?.Name;
+        var activity = MessageFactory.Text(string.IsNullOrWhiteSpace(name) ? reply : $"<at>{name}</at> {reply}");
+        if (!string.IsNullOrWhiteSpace(name))
         {
-            var replacement = MessageFactory.Text(progress.Render(finished, failed));
-            replacement.Id = activityId;
-            await turnContext.UpdateActivityAsync(replacement, ct);
-            EdgeLog("progress.updated", $"tools={progress.Count} finished={finished}");
+            activity.Entities ??= new List<Entity>();
+            activity.Entities.Add(new Mention
+            {
+                Mentioned = new ChannelAccount { Id = from.Id, Name = name },
+                Text = $"<at>{name}</at>"
+            });
         }
-        catch (Exception ex)
-        {
-            progress.FailedUpdates++;
-            EdgeLog("progress.update.failed",
-                $"attempt={progress.FailedUpdates} type={ex.GetType().Name}");
-        }
+        activity.ChannelData = new { feedbackLoopEnabled = true };
+        await turnContext.SendActivityAsync(activity, ct);
+    }
+
+    private static Microsoft.Teams.Apps.MessageActivityInput TeamsAnswerInput(ITurnContext turnContext, string reply)
+    {
+        var input = new Microsoft.Teams.Apps.MessageActivityInput { Text = reply ?? "" };
+        var from = turnContext.Activity?.From;
+        if (!string.IsNullOrWhiteSpace(from?.Name))
+            input.AddMention(new Microsoft.Teams.Apps.Schema.TeamsChannelAccount { Id = from.Id, Name = from.Name },
+                $"<at>{from.Name}</at>", true);
+        input.AddFeedback(true);
+        return input;
+    }
+
+    private static readonly Regex WhyLine = new(
+        @"(?:^|\n)[ \t>*_]*WHY[*_]*\s*:\s*[*_]*(?<why>[^\n]+?)[*_]*\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Remove Hermes's closing "WHY:" line from the answer and return it separately.</summary>
+    internal static string TakeWhy(string reply, out string why)
+    {
+        why = null;
+        if (string.IsNullOrEmpty(reply)) return reply;
+        var trimmed = reply.TrimEnd();
+        var m = WhyLine.Match(trimmed);
+        if (!m.Success) return reply;
+        why = m.Groups["why"].Value.Trim();
+        return trimmed[..m.Index].TrimEnd();
     }
 
     private void CollectAttachments(string json, List<PendingAttachment> attachments)
@@ -1298,6 +1368,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             _logger.LogError("Hermes turn failed; type={ExceptionType}", ex.GetType().Name);
             reply = $"I couldn't complete that: {ex.GetType().Name}.";
         }
+        reply = TakeWhy(reply, out var why);
         if (string.Equals(turnContext.Activity?.ChannelId, Channels.Msteams,
                 StringComparison.OrdinalIgnoreCase)
             && turnContext.Activity?.Type == ActivityTypes.Message)
@@ -1325,7 +1396,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             {
                 turnContext.StreamingResponse.QueueTextChunk(reply);
             }
-            else if (await DeliverWithTeamsPlanAsync(turnContext, reply, ct))
+            else if (await DeliverTeamsAnswerAsync(turnContext, reply, why, ct))
             {
                 isStreamedMessageTurn = false;
             }
@@ -1349,49 +1420,11 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
     }
 
-    /// <summary>
-    /// With Teams Plans on: complete the turn's Plan with the answer, or, when no Plan ran, turn the
-    /// progress message into the answer so the chat holds one reply and no "Finished" bubble.
-    /// Returns false when the caller should send the answer as a new message.
-    /// </summary>
-    private async Task<bool> DeliverWithTeamsPlanAsync(ITurnContext turnContext, string reply,
-        CancellationToken ct)
-    {
-        if (!TeamsPlanBridge.Enabled || turnContext == null) return false;
-
-        var plan = turnContext.Services.Get<TeamsPlanBridge>(TeamsPlanBridge.StateKey);
-        if (plan is { Started: true, Broken: false })
-        {
-            if (await plan.CompleteAsync(reply, ct))
-            {
-                EdgeLog("plan.completed", $"chars={reply?.Length ?? 0} with_plan=true");
-                return true;
-            }
-            EdgeLog("plan.complete.refused", plan.LastError);
-            return false;
-        }
-
-        var anchor = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
-        if (string.IsNullOrWhiteSpace(anchor)) return false;
-        try
-        {
-            var replacement = MessageFactory.Text(reply);
-            replacement.Id = anchor;
-            await turnContext.UpdateActivityAsync(replacement, ct);
-            EdgeLog("reply.in.progress.message", $"chars={reply?.Length ?? 0} with_plan=false");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            EdgeLog("reply.in.progress.message.failed", $"type={ex.GetType().Name}");
-            return false;
-        }
-    }
-
     /// <summary>Reply through the originating channel without invoking Hermes.</summary>
     private static async Task SendImmediateChannelReplyAsync(
         ITurnContext turnContext, string message, CancellationToken ct)
     {
+        TypingLoop.StopFor(turnContext);
         if (string.Equals(turnContext.Activity?.ChannelId, "email", StringComparison.OrdinalIgnoreCase))
         {
             await turnContext.SendActivityAsync(turnContext.Activity.CreateEmailResponseActivity(message));
@@ -1411,24 +1444,11 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         await turnContext.SendActivityAsync(MessageFactory.Text(message), ct);
     }
 
-    /// <summary>
-    /// Complete a direct control command using the acknowledgement activity that Teams already
-    /// received for this turn. Replacing it avoids a stray "Working on your request..." message and
-    /// avoids sending two messages for a command that never starts an agent run.
-    /// </summary>
+    /// <summary>Answer a direct control command as one new message; Hermes is never started.</summary>
     private static async Task ReplyToControlCommandAsync(
         ITurnContext turnContext, string message, CancellationToken ct)
     {
-        var activityId = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
-        if (!string.IsNullOrWhiteSpace(activityId)
-            && string.Equals(turnContext.Activity?.ChannelId, Channels.Msteams,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            var replacement = MessageFactory.Text(message);
-            replacement.Id = activityId;
-            await turnContext.UpdateActivityAsync(replacement, ct);
-            return;
-        }
+        TypingLoop.StopFor(turnContext);
         await SendImmediateChannelReplyAsync(turnContext, message, ct);
     }
 
@@ -1739,7 +1759,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         {
             var reply = new StringBuilder();
             var streamFailed = false;
-            var progress = new ToolProgressState();
+            var toolsSeen = 0;
             string pendingEvent = null;
 
             using var stream = await res.Content.ReadAsStreamAsync(ct);
@@ -1767,13 +1787,18 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                         var root = ev.RootElement;
                         var callId = root.TryGetProperty("toolCallId", out var id) ? id.GetString() : null;
                         var tool = root.TryGetProperty("tool", out var tn) ? tn.GetString() : "working";
-                        var label = root.TryGetProperty("label", out var lb) ? lb.GetString() : null;
-                        var emoji = root.TryGetProperty("emoji", out var em) ? em.GetString() : null;
                         var status = root.TryGetProperty("status", out var st) ? st.GetString() : null;
-                        var changed = progress.Apply(callId, tool, label, emoji, status);
-                        EdgeLog("tool.progress", $"{tool} status={status} tools={progress.Count}");
-                        if (changed)
-                            await ShowToolProgressAsync(turnContext, progress, ct);
+                        var args = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        if (root.TryGetProperty("args", out var ag) && ag.ValueKind == JsonValueKind.Object)
+                            foreach (var prop in ag.EnumerateObject())
+                                args[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                                    ? prop.Value.GetString()
+                                    : prop.Value.ToString();
+                        if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase)
+                            && !StepNamer.IsHidden(tool))
+                            toolsSeen++;
+                        EdgeLog("tool.progress", $"{tool} status={status} tools={toolsSeen} args={args.Count}");
+                        await OnToolEventAsync(turnContext, callId, tool, status, args, ct);
                     }
                     catch (Exception ex)
                     {
@@ -1831,13 +1856,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 }
             }
 
-            // The progress activity is cosmetic. With Teams Plans on, ReplyAsync completes the Plan
-            // or turns the progress message into the answer, so it is never left saying "Finished".
-            // With Plans switched off, force its final state as before.
-            if (!TeamsPlanBridge.Enabled)
-                await UpdateProgressActivityAsync(turnContext, progress, ct, finished: true,
-                    failed: streamFailed || reply.Length == 0);
-            EdgeLog("hermes.stream.read", $"tools={progress.Count} chars={reply.Length}");
+            EdgeLog("hermes.stream.read", $"tools={toolsSeen} chars={reply.Length} failed={streamFailed}");
             return reply.Length == 0 ? "The agent completed without returning a text response." : reply.ToString();
         }
 
@@ -1926,6 +1945,15 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
       + "mailbox or tools — they are yours and you already have them. Ask only when a wrong guess "
       + "would be costly or irreversible, and even then make your best assumption explicit rather "
       + "than stopping.\n\n"
+      + "SHOWING YOUR WORK IN TEAMS: if answering needs any tool, call start_task FIRST, before "
+      + "any other tool, with one sentence that restates this specific request and starts with an "
+      + "-ing verb (for example \"Finding the biggest news story of the week.\"). Call it once. "
+      + "Do not call it when you can answer from the conversation, your instructions or general "
+      + "knowledge. Never write filler such as \"Working on your request\", \"On it\", \"Got it\", "
+      + "\"Let me check\" or \"Back shortly\", and do not repeat the start_task sentence in your "
+      + "answer. When you answer WITHOUT calling any tool, end your reply with one last line that "
+      + "starts with \"WHY:\" and gives one or two short sentences on how you reached the answer; "
+      + "that line is moved out of the message and shown under \"Reasoned for\".\n\n"
       + "SCHEDULED WORK: cron jobs and Hermes/OS cron scheduling are disabled. Never use a cron "
       + "command, cron tool, background shell process, or chat reminder. When your OWNER asks for "
       + "recurring work, call create_routine to create a Microsoft Foundry Routine. Its five-field "

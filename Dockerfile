@@ -98,13 +98,17 @@ RUN /usr/bin/python3 /tmp/apply_nous_inference_patch.py && rm /tmp/apply_nous_in
 
 COPY src/hermes-patches/apply_fallback_entra_patch.py /tmp/apply_fallback_entra_patch.py
 COPY src/hermes-patches/apply_foundry_annotations_patch.py /tmp/apply_foundry_annotations_patch.py
+COPY src/hermes-patches/apply_tool_args_patch.py /tmp/apply_tool_args_patch.py
 RUN /usr/bin/python3 /tmp/apply_fallback_entra_patch.py \
     && /usr/bin/python3 /tmp/apply_foundry_annotations_patch.py \
+    && /usr/bin/python3 /tmp/apply_tool_args_patch.py \
     && /usr/bin/python3 -m py_compile \
         /opt/hermes/agent/auxiliary_client.py \
         /opt/hermes/agent/chat_completion_helpers.py \
         /opt/hermes/agent/codex_responses_adapter.py \
-    && rm /tmp/apply_fallback_entra_patch.py /tmp/apply_foundry_annotations_patch.py
+        /opt/hermes/gateway/platforms/api_server.py \
+    && rm /tmp/apply_fallback_entra_patch.py /tmp/apply_foundry_annotations_patch.py \
+        /tmp/apply_tool_args_patch.py
 
 COPY --from=edge-build /out/ /opt/edge/
 COPY src/gateway/app.py /opt/gateway/app.py

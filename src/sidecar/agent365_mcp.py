@@ -1021,6 +1021,22 @@ def whoami() -> str:
 
 
 @mcp.tool()
+def start_task(task: str) -> str:
+    """Tell the person what you are about to do, before work that needs tools.
+
+    Call this FIRST, before any other tool, whenever answering needs a tool. Do not call it when
+    you can answer from the conversation, your instructions or general knowledge. `task` is ONE
+    sentence that restates this specific request, starting with an -ing verb, for example
+    "Finding the biggest news story of the week." Never filler ("Working on your request",
+    "On it", "Let me check", "Back shortly"). Teams shows it once as your first message and never
+    edits it; your steps then appear under it. Call it once per request."""
+    sentence = " ".join((task or "").split())
+    if not sentence:
+        return "ERROR: task is required: one sentence starting with an -ing verb."
+    return "Shown to the person as your first message. Do the work now; do not repeat it in your answer."
+
+
+@mcp.tool()
 def resolve_person(query: str, top: int = 10) -> str:
     """Resolve a colleague's name or email address through the TENANT USER DIRECTORY.
 

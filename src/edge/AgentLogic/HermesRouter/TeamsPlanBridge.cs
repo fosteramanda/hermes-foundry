@@ -35,6 +35,7 @@ internal sealed class TeamsPlanBridge
 
     private readonly Plan _plan;
     private readonly Dictionary<string, PlanStep> _steps = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _doneTitles = new(StringComparer.Ordinal);
     private PlanStep? _active;
     private int _next;
 
@@ -80,62 +81,152 @@ internal sealed class TeamsPlanBridge
         return (ApiClient)ctor.Invoke([serviceUrl, http, conversations, userTokens, null, null]);
     }
 
-    /// <summary>A tool started. Its step joins the Plan; the step before it is marked done.</summary>
-    public async Task StepStartedAsync(string callId, string title, CancellationToken ct)
+    /// <summary>A tool started. Its step joins the Plan under its running ("-ing") name.</summary>
+    public async Task StepStartedAsync(string callId, string runningTitle, string doneTitle,
+        CancellationToken ct)
     {
         if (Broken) return;
-        var changed = new List<PlanStep>();
-        if (_active != null && _active.Status != PlanStepStatuses.Completed)
-        {
-            _active.Status = PlanStepStatuses.Completed;
-            _active.Version++;
-            changed.Add(_active);
-        }
         var step = new PlanStep
         {
             Id = $"step-{++_next}",
             Version = 1,
-            Title = Trim(title),
+            Title = Trim(runningTitle),
             Status = PlanStepStatuses.Active
         };
         _steps[callId] = step;
+        _doneTitles[callId] = Trim(doneTitle);
         _active = step;
-        changed.Add(step);
-        await SendAsync(changed, ct);
+        await SendAsync([step], ct);
     }
 
-    /// <summary>A tool finished. Its step is marked done.</summary>
+    /// <summary>A tool finished. Its step is renamed to the past tense and marked done.</summary>
     public async Task StepCompletedAsync(string callId, CancellationToken ct)
     {
         if (Broken || !Started || !_steps.TryGetValue(callId, out var step)) return;
         if (step.Status == PlanStepStatuses.Completed) return;
-        step.Status = PlanStepStatuses.Completed;
-        step.Version++;
+        MarkDone(callId, step);
         await SendAsync([step], ct);
     }
 
-    /// <summary>Completes the Plan with the answer. Returns false if Teams refused it.</summary>
-    public async Task<bool> CompleteAsync(string answer, CancellationToken ct)
+    public int StepCount => _steps.Count;
+
+    private void MarkDone(string callId, PlanStep step)
+    {
+        step.Status = PlanStepStatuses.Completed;
+        if (_doneTitles.TryGetValue(callId, out var done)) step.Title = done;
+        step.Version++;
+    }
+
+    private async Task<bool> CloseOpenStepsAsync(CancellationToken ct)
+    {
+        var open = _steps.Where(kv => kv.Value.Status != PlanStepStatuses.Completed).ToList();
+        foreach (var (callId, s) in open) MarkDone(callId, s);
+        if (open.Count > 0) await _plan.UpdateAsync(open.Select(kv => kv.Value).ToList(), ct);
+        return true;
+    }
+
+    /// <summary>Completes the Plan with the answer message itself (layout B).</summary>
+    public async Task<bool> CompleteAsync(MessageActivityInput answer, CancellationToken ct)
     {
         if (Broken || !Started) return false;
         try
         {
-            var open = _steps.Values.Where(s => s.Status != PlanStepStatuses.Completed).ToList();
-            foreach (var s in open)
-            {
-                s.Status = PlanStepStatuses.Completed;
-                s.Version++;
-            }
-            if (open.Count > 0) await _plan.UpdateAsync(open, ct);
-            // Teams refuses a completing message with empty text.
-            var text = string.IsNullOrWhiteSpace(answer) ? "\u200B" : answer;
-            await _plan.CompleteAsync(new MessageActivityInput { Text = text }, ct);
+            await CloseOpenStepsAsync(ct);
+            if (string.IsNullOrWhiteSpace(answer.Text)) answer.Text = "\u200B";
+            await _plan.CompleteAsync(answer, ct);
             return true;
         }
         catch (Exception ex)
         {
             Fail(ex);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Completes the Plan with an empty completion message, after the answer was sent on its own
+    /// (layout A2). Teams refuses a completing message with empty text, so it carries one
+    /// zero-width space.
+    /// </summary>
+    public async Task<bool> CompleteEmptyAsync(CancellationToken ct)
+    {
+        if (Broken || !Started) return false;
+        try
+        {
+            await CloseOpenStepsAsync(ct);
+            await _plan.CompleteAsync(new MessageActivityInput { Text = "\u200B" }, ct);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Fail(ex);
+            return false;
+        }
+    }
+
+    /// <summary>Stops the Plan after the answer was sent on its own (layout A1).</summary>
+    public async Task<bool> StopAsync(CancellationToken ct)
+    {
+        if (Broken || !Started) return false;
+        try
+        {
+            await CloseOpenStepsAsync(ct);
+            await _plan.StopAsync(ct);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Fail(ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Starts the Plan with one already completed step and completes it with the answer at once:
+    /// the reasoning-only case, where there is no first message and no tool step.
+    /// </summary>
+    public async Task<bool> ReasonedOnlyAsync(string title, string why, MessageActivityInput answer,
+        CancellationToken ct)
+    {
+        if (Broken) return false;
+        try
+        {
+            var step = new PlanStep
+            {
+                Id = "why",
+                Version = 1,
+                Title = Trim(title),
+                Description = string.IsNullOrWhiteSpace(why) ? null : why.Trim(),
+                Status = PlanStepStatuses.Completed
+            };
+            await _plan.StartAsync([step], ct);
+            Started = true;
+            if (string.IsNullOrWhiteSpace(answer.Text)) answer.Text = "\u200B";
+            await _plan.CompleteAsync(answer, ct);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Fail(ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Tries to start the Plan before any step exists, so the work line can read "Thinking" while
+    /// the first message waits for its first step. Records Teams' answer either way.
+    /// </summary>
+    public async Task<string> TryStartWithoutStepsAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _plan.StartAsync(new List<PlanStep>(), ct);
+            Started = true;
+            return "accepted";
+        }
+        catch (Exception ex)
+        {
+            return $"{ex.GetType().Name}: {Shorten(ex.Message)}";
         }
     }
 
