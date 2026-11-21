@@ -1061,12 +1061,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     }
 
     /// <summary>
-    /// How a Plan ends. "b": the answer message completes it. "a2": the answer goes out on its own
-    /// and an empty message after it completes the Plan. "a1": the answer goes out on its own and
-    /// the Plan is stopped. The owner can switch it with "/cot layout a1|a2|b" for the placement test.
+    /// How a Plan ends. "a2" (default): the answer goes out on its own and an empty message after it
+    /// completes the Plan, so "Reasoned for" sits under the answer, outside it. "b": the answer
+    /// message completes it, and Teams draws "Reasoned for" inside the answer bubble. "a1": the
+    /// answer goes out on its own and the Plan is stopped, so there is no "Reasoned for" at all
+    /// (all three measured in Teams web, 21 Nov). The owner can switch it with "/cot layout a1|a2|b".
     /// </summary>
     private static string _cotLayout =
-        (Environment.GetEnvironmentVariable("HERMES_COT_LAYOUT") ?? "b").Trim().ToLowerInvariant();
+        (Environment.GetEnvironmentVariable("HERMES_COT_LAYOUT") ?? "a2").Trim().ToLowerInvariant();
 
     /// <summary>
     /// Reasoning-only answers. "none": typing, then the answer. "late": the answer completes a Plan
@@ -1074,7 +1076,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// the answer is ready, so nothing shows under the person's message while Hermes thinks.
     /// </summary>
     private static string _cotReasoned =
-        (Environment.GetEnvironmentVariable("HERMES_COT_REASONED") ?? "none").Trim().ToLowerInvariant();
+        (Environment.GetEnvironmentVariable("HERMES_COT_REASONED") ?? "late").Trim().ToLowerInvariant();
 
     /// <summary>Try to start the Plan with no steps when the first message posts, so it can read "Thinking".</summary>
     private static bool _cotThinkingStart =
@@ -1277,12 +1279,20 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         else if (work?.FirstMessageId == null && _cotReasoned == "late")
         {
+            // Bound to the person's message and started only now, so nothing shows under it while
+            // Hermes thinks. Teams times "Reasoned for" from the Plan's start.
             var bridge = await CreatePlanAsync(turnContext, turnContext.Activity.Id, ct);
-            var title = string.IsNullOrWhiteSpace(why) ? "Answered from what I already know" : why;
-            if (bridge != null
-                && await bridge.ReasonedOnlyAsync(title, why, TeamsAnswerInput(turnContext, reply), ct))
+            if (bridge != null && _cotLayout == "b"
+                && await bridge.ReasonedOnlyAsync(why, TeamsAnswerInput(turnContext, reply), ct))
             {
-                EdgeLog("plan.completed", $"chars={reply?.Length ?? 0} steps=1 with_plan=true reasoned_only=true why={!string.IsNullOrWhiteSpace(why)}");
+                EdgeLog("plan.completed", $"chars={reply?.Length ?? 0} steps=1 with_plan=true reasoned_only=true layout=b why={!string.IsNullOrWhiteSpace(why)}");
+                return true;
+            }
+            if (bridge != null && _cotLayout != "b")
+            {
+                await SendTeamsAnswerAsync(turnContext, reply, ct);
+                EdgeLog(await bridge.ReasonedOnlyAsync(why, null, ct) ? "plan.completed.after.answer" : "plan.reasoned.refused",
+                    bridge.Broken ? bridge.LastError : $"steps=1 reasoned_only=true layout={_cotLayout} why={!string.IsNullOrWhiteSpace(why)}");
                 return true;
             }
             EdgeLog("plan.reasoned.refused", bridge?.LastError ?? "no plan");

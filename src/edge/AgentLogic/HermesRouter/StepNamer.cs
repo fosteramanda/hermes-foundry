@@ -14,7 +14,7 @@ public sealed class StepNamer
     /// Longest name Teams shows without cutting it: the collapsed work line is about 210 pixels
     /// wide in Teams web and cut "Searching the web for "What ar..." at 30 characters (21 Nov).
     /// </summary>
-    public static int MaxLength { get; set; } = 26;
+    public static int MaxLength { get; set; } = 28;
 
     private readonly HashSet<string> _used = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _counts = new(StringComparer.OrdinalIgnoreCase);
@@ -178,7 +178,11 @@ public sealed class StepNamer
     private static string Site(string url)
     {
         if (!Uri.TryCreate(Clean(url), UriKind.Absolute, out var uri)) return "a web page";
-        return uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
+        var labels = uri.Host.Split('.').ToList();
+        if (labels.Count > 2 && labels[0].Equals("www", StringComparison.OrdinalIgnoreCase)) labels.RemoveAt(0);
+        // Long hosts lose their leading labels, never their ending: "japannews.yomiuri.co.jp" -> "yomiuri.co.jp".
+        while (labels.Count > 2 && string.Join('.', labels).Length > 18) labels.RemoveAt(0);
+        return string.Join('.', labels);
     }
 
     private static readonly HashSet<string> Stop = new(StringComparer.OrdinalIgnoreCase)
@@ -196,6 +200,9 @@ public sealed class StepNamer
             .Select(w => w.Trim('"', '\'', '?', '.', ',', '!', ':', ';', '(', ')'))
             .Where(w => w.Length > 0 && !Stop.Contains(w.Replace("'", "")))
             .ToList();
+        // A capital that only starts the sentence ("Top world news") reads oddly mid-name.
+        if (words.Count > 0 && words[0].Length > 1 && char.IsUpper(words[0][0]) && words[0][1..].All(char.IsLower))
+            words[0] = char.ToLowerInvariant(words[0][0]) + words[0][1..];
         return string.Join(' ', words);
     }
 

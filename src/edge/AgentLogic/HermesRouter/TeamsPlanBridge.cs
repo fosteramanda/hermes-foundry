@@ -197,11 +197,12 @@ internal sealed class TeamsPlanBridge
     }
 
     /// <summary>
-    /// Starts the Plan with one already completed step and completes it with the answer at once:
-    /// the reasoning-only case, where there is no first message and no tool step.
+    /// The reasoning-only case: no first message and no tool step. Starts the Plan with one
+    /// already completed step that carries the why, then completes it, either with the answer
+    /// itself (layout b) or, when <paramref name="answer"/> is null, with an empty message sent
+    /// after the answer (layout a2).
     /// </summary>
-    public async Task<bool> ReasonedOnlyAsync(string title, string why, MessageActivityInput answer,
-        CancellationToken ct)
+    public async Task<bool> ReasonedOnlyAsync(string why, MessageActivityInput? answer, CancellationToken ct)
     {
         if (Broken) return false;
         try
@@ -210,14 +211,14 @@ internal sealed class TeamsPlanBridge
             {
                 Id = "why",
                 Version = 1,
-                Title = Trim(title),
-                Description = string.IsNullOrWhiteSpace(why) ? null : why.Trim(),
+                Title = Trim(string.IsNullOrWhiteSpace(why) ? "Answered from what I already know" : why),
                 Status = PlanStepStatuses.Completed
             };
             await _plan.StartAsync([step], ct);
             Started = true;
-            if (string.IsNullOrWhiteSpace(answer.Text)) answer.Text = "\u200B";
-            await _plan.CompleteAsync(answer, ct);
+            var completion = answer ?? new MessageActivityInput { Text = "\u200B" };
+            if (string.IsNullOrWhiteSpace(completion.Text)) completion.Text = "\u200B";
+            await _plan.CompleteAsync(completion, ct);
             return true;
         }
         catch (Exception ex)

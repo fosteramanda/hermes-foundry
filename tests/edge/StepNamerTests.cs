@@ -30,7 +30,7 @@ public sealed class StepNamerTests
         Assert.True(running.Length <= StepNamer.MaxLength, running);
         Assert.True(done.Length <= StepNamer.MaxLength, done);
         Assert.DoesNotContain("...", running);
-        Assert.Equal("Searching for single", running);
+        Assert.Equal("Searching for single biggest", running);
     }
 
     [Fact]
@@ -47,6 +47,15 @@ public sealed class StepNamerTests
         Assert.Equal("Reading reuters.com again", second);
         Assert.Equal("Reading apnews.com", third.Running);
         Assert.Equal("Read apnews.com", third.Done);
+        Assert.Equal("Reading yomiuri.co.jp",
+            names.Name("fetch_url", Args(("url", "https://japannews.yomiuri.co.jp/news/1"))).Running);
+    }
+
+    [Fact]
+    public void ASentenceInitialCapitalIsLowered()
+    {
+        var (running, _) = new StepNamer().Name("web_search", Args(("query", "Top world news this week")));
+        Assert.Equal("Searching for top world news", running);
     }
 
     [Theory]
