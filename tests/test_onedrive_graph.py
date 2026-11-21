@@ -411,14 +411,14 @@ class GraphOneDriveTests(unittest.TestCase):
                "?sourcedoc=%7B1%7D&file=Q3%20Plan.docx")
         item = json.dumps({"id": "item-1", "name": "Q3 [draft] Plan.docx", "webUrl": url})
         self.assertEqual(self.m._office_link_line(item),
-                         f"\nLINK FOR YOUR REPLY: [Q3 \\[draft\\] Plan]({url})")
+                         f'\nLINK FOR YOUR REPLY: Done &mdash; <a href="{url.replace("&", "&amp;")}">Q3 [draft] Plan</a>')
         self.assertEqual(self.m._office_link_line('{"id":"item-1"}'), "")
         self.assertEqual(self.m._office_link_line("ERROR 500 from Graph"), "")
 
         with mock.patch.object(self.m, "_graph", return_value=json.dumps(
                 {"id": "item-2", "name": "Budget.xlsx", "webUrl": "https://x/Budget.xlsx"})):
             result = self.m.create_xlsx("Budget.xlsx", "Item,Cost\nA,1")
-        self.assertIn("LINK FOR YOUR REPLY: [Budget](https://x/Budget.xlsx)", result)
+        self.assertIn('LINK FOR YOUR REPLY: Done &mdash; <a href="https://x/Budget.xlsx">Budget</a>', result)
 
     def test_edit_docx_updates_same_item_with_etag_guard(self):
         doc = Document()

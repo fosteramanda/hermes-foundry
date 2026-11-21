@@ -106,11 +106,11 @@ mcp = FastMCP(
         ".docx in your OneDrive. Do not open the browser-based Word editor: it requires an "
         "interactive sign-in that an autopilot cannot complete. edit_docx downloads the OOXML, "
         "changes it locally, and uploads it back to the same item. "
-        "DOCUMENT LINKS: when a reply points to a Word document, Excel workbook or PowerPoint deck, "
-        "give it as a Markdown link whose text is the document's title, never a bare URL and never "
-        "'here' or 'link'. Lead with it and keep the reply short, for example "
-        "'Done: [Q3 Planning Notes](url)', with at most one more sentence. create_docx, edit_docx, "
-        "create_xlsx and create_pptx return a LINK FOR YOUR REPLY line; use it exactly. "
+        "DOCUMENT LINKS: when a reply points to a Word document, Excel workbook or PowerPoint deck "
+        "you created, lead with it in exactly this shape: 'Done &mdash; <a href=\"[link]\">[document "
+        "title]</a>', with at most one more sentence after it. Never a bare URL and never 'here' or "
+        "'link' as the text. create_docx, edit_docx, create_xlsx and create_pptx return a LINK FOR "
+        "YOUR REPLY line; use that link and title exactly. "
         "TEAMS UPLOADS: files attached to the current Teams message are temporary and are not in "
         "your OneDrive. When the turn prompt lists an upload path, call read_uploaded_file on that "
         "exact path before discussing its contents. Never guess from the filename or try to open "
@@ -1983,7 +1983,7 @@ def _pptx_runs(paragraph, text: str, size_pt: int = 18) -> None:
 
 
 def _office_link_line(graph_item: str) -> str:
-    """A ready Markdown link for the reply, titled with the file name, from a Graph driveItem.
+    """The exact link for the reply, an HTML anchor titled with the file name, from a Graph driveItem.
 
     Teams shows a bare OneDrive address as a long unreadable string, so the tool hands the model the
     exact link to use. Returns "" when Graph did not return a webUrl."""
@@ -1994,8 +1994,8 @@ def _office_link_line(graph_item: str) -> str:
     if not isinstance(item, dict) or not item.get("webUrl"):
         return ""
     stem = os.path.splitext(str(item.get("name") or ""))[0].strip() or "Open the document"
-    title = stem.replace("[", "\\[").replace("]", "\\]")
-    return f"\nLINK FOR YOUR REPLY: [{title}]({item['webUrl']})"
+    href = html.escape(str(item["webUrl"]), quote=True)
+    return f'\nLINK FOR YOUR REPLY: Done &mdash; <a href="{href}">{html.escape(stem)}</a>'
 
 
 @mcp.tool()
