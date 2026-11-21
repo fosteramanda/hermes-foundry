@@ -1176,7 +1176,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         if (!_cotThinkingStart) return;
         var plan = await EnsureTeamsPlanAsync(turnContext, work, ct);
         if (plan == null) return;
-        EdgeLog("plan.start.nosteps", await plan.TryStartWithoutStepsAsync(ct));
+        EdgeLog(await plan.StartThinkingAsync(ct) ? "plan.thinking" : "plan.refused",
+            plan.Broken ? plan.LastError : "started with Thinking");
     }
 
     /// <summary>
@@ -1245,7 +1246,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         TypingLoop.StopFor(turnContext);
         var work = turnContext.Services.Get<WorkLine>(WorkLine.StateKey);
         var plan = work?.Plan;
-        if (plan is { Started: true, Broken: false })
+        if (plan is { Started: true, Broken: false, OnlyThinking: true })
+        {
+            // start_task ran but no tool did: nothing to show, so end the Plan without a row.
+            EdgeLog("plan.stopped.no.steps", await plan.StopAsync(ct) ? "ok" : plan.LastError);
+        }
+        else if (plan is { Started: true, Broken: false })
         {
             switch (_cotLayout)
             {
@@ -1309,8 +1315,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         var input = new Microsoft.Teams.Apps.MessageActivityInput { Text = reply ?? "" };
         var from = turnContext.Activity?.From;
         if (!string.IsNullOrWhiteSpace(from?.Name))
-            input.AddMention(new Microsoft.Teams.Apps.Schema.TeamsChannelAccount { Id = from.Id, Name = from.Name },
-                $"<at>{from.Name}</at>", true);
+            input.AddMention(new Microsoft.Teams.Apps.Schema.TeamsChannelAccount { Id = from.Id, Name = from.Name });
         input.AddFeedback(true);
         return input;
     }

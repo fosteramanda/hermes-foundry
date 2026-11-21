@@ -37,6 +37,7 @@ internal sealed class TeamsPlanBridge
     private readonly Dictionary<string, PlanStep> _steps = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _doneTitles = new(StringComparer.Ordinal);
     private PlanStep? _active;
+    private PlanStep? _thinking;
     private int _next;
 
     public bool Started { get; private set; }
@@ -86,13 +87,24 @@ internal sealed class TeamsPlanBridge
         CancellationToken ct)
     {
         if (Broken) return;
-        var step = new PlanStep
+        PlanStep step;
+        if (_thinking != null)
         {
-            Id = $"step-{++_next}",
-            Version = 1,
-            Title = Trim(runningTitle),
-            Status = PlanStepStatuses.Active
-        };
+            step = _thinking;
+            _thinking = null;
+            step.Title = Trim(runningTitle);
+            step.Version++;
+        }
+        else
+        {
+            step = new PlanStep
+            {
+                Id = $"step-{++_next}",
+                Version = 1,
+                Title = Trim(runningTitle),
+                Status = PlanStepStatuses.Active
+            };
+        }
         _steps[callId] = step;
         _doneTitles[callId] = Trim(doneTitle);
         _active = step;
@@ -109,6 +121,9 @@ internal sealed class TeamsPlanBridge
     }
 
     public int StepCount => _steps.Count;
+
+    /// <summary>The Plan only ever held its "Thinking" step: no real work ran.</summary>
+    public bool OnlyThinking => _thinking != null && _steps.Count == 0;
 
     private void MarkDone(string callId, PlanStep step)
     {
@@ -213,21 +228,23 @@ internal sealed class TeamsPlanBridge
     }
 
     /// <summary>
-    /// Tries to start the Plan before any step exists, so the work line can read "Thinking" while
-    /// the first message waits for its first step. Records Teams' answer either way.
+    /// Starts the Plan as soon as the first message posts, so the work line reads "Thinking" until
+    /// the first step starts. Teams refuses a Plan with no steps ("at least one step is required"),
+    /// so it opens with one active step named "Thinking" that the first real step then takes over:
+    /// same step, renamed, so "Thinking" never stays behind as a row.
     /// </summary>
-    public async Task<string> TryStartWithoutStepsAsync(CancellationToken ct)
+    public async Task<bool> StartThinkingAsync(CancellationToken ct)
     {
-        try
+        if (Broken || Started) return false;
+        _thinking = new PlanStep
         {
-            await _plan.StartAsync(new List<PlanStep>(), ct);
-            Started = true;
-            return "accepted";
-        }
-        catch (Exception ex)
-        {
-            return $"{ex.GetType().Name}: {Shorten(ex.Message)}";
-        }
+            Id = $"step-{++_next}",
+            Version = 1,
+            Title = "Thinking",
+            Status = PlanStepStatuses.Active
+        };
+        await SendAsync([_thinking], ct);
+        return !Broken;
     }
 
     private async Task SendAsync(List<PlanStep> steps, CancellationToken ct)

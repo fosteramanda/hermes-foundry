@@ -15,8 +15,8 @@ public sealed class StepNamerTests
 
         var (running, done) = names.Name("mcp__m365__web_search", Args(("query", "biggest news this week")));
 
-        Assert.Equal("Searching the web for \"biggest news this week\"", running);
-        Assert.Equal("Searched the web for \"biggest news this week\"", done);
+        Assert.Equal("Searching for biggest news", running);
+        Assert.Equal("Searched for biggest news", done);
     }
 
     [Fact]
@@ -30,7 +30,7 @@ public sealed class StepNamerTests
         Assert.True(running.Length <= StepNamer.MaxLength, running);
         Assert.True(done.Length <= StepNamer.MaxLength, done);
         Assert.DoesNotContain("...", running);
-        Assert.EndsWith("\"", running);
+        Assert.Equal("Searching for single", running);
     }
 
     [Fact]
@@ -43,10 +43,10 @@ public sealed class StepNamerTests
         var second = names.Name("browse_url", page).Running;
         var third = names.Name("fetch_url", Args(("url", "https://apnews.com/article/summit-peace-declaration-123")));
 
-        Assert.Equal("Reading reuters.com: world", first);
-        Assert.NotEqual(first, second);
-        Assert.Equal("Reading apnews.com: summit peace declaration", third.Running);
-        Assert.Equal("Read apnews.com: summit peace declaration", third.Done);
+        Assert.Equal("Reading reuters.com", first);
+        Assert.Equal("Reading reuters.com again", second);
+        Assert.Equal("Reading apnews.com", third.Running);
+        Assert.Equal("Read apnews.com", third.Done);
     }
 
     [Theory]

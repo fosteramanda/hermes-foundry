@@ -10,8 +10,11 @@ using System.Globalization;
 /// </summary>
 public sealed class StepNamer
 {
-    /// <summary>Longest name Teams shows on one row without cutting it (measured in Teams web).</summary>
-    public static int MaxLength { get; set; } = 48;
+    /// <summary>
+    /// Longest name Teams shows without cutting it: the collapsed work line is about 210 pixels
+    /// wide in Teams web and cut "Searching the web for "What ar..." at 30 characters (21 Nov).
+    /// </summary>
+    public static int MaxLength { get; set; } = 26;
 
     private readonly HashSet<string> _used = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _counts = new(StringComparer.OrdinalIgnoreCase);
@@ -69,22 +72,22 @@ public sealed class StepNamer
         var file = FileName(Arg("path", "name", "file_name", "filename", "source_path"));
         switch (tool)
         {
-            case "web_search": return With("Searching the web for", "Searched the web for", Quote(query));
+            case "web_search": return With("Searching for", "Searched for", Or(Keywords(query), "web results"));
             case "fetch_url":
             case "browse_url": return With("Reading", "Read", Site(url));
             case "screenshot_url": return With("Capturing", "Captured", Site(url));
-            case "search_files": return With("Searching OneDrive for", "Searched OneDrive for", Quote(query));
+            case "search_files": return With("Searching OneDrive for", "Searched OneDrive for", Keywords(query));
             case "list_files": return ("Listing OneDrive files", "Listed OneDrive files");
             case "read_file": return With("Reading", "Read", Or(file, "a OneDrive file"));
             case "list_shared_with_me": return ("Checking files shared with me", "Checked files shared with me");
-            case "search_emails": return With("Searching email for", "Searched email for", Quote(query));
+            case "search_emails": return With("Searching email for", "Searched email for", Keywords(query));
             case "list_inbox": return ("Checking the inbox", "Checked the inbox");
             case "read_email": return ("Reading an email", "Read an email");
             case "send_email": return With("Emailing", "Emailed", Person(Arg("to", "recipients")));
             case "reply_email": return ("Replying to the email", "Replied to the email");
             case "send_teams_message": return With("Messaging", "Messaged", Person(Arg("to")));
             case "list_events": return ("Checking the calendar", "Checked the calendar");
-            case "create_event": return With("Booking", "Booked", Or(Quote(Arg("subject", "title")), "the meeting"));
+            case "create_event": return With("Booking", "Booked", Or(Arg("subject", "title"), "the meeting"));
             case "update_event": return ("Updating the meeting", "Updated the meeting");
             case "invite_to_event": return ("Inviting people to the meeting", "Invited people to the meeting");
             case "attach_to_event": return With("Attaching", "Attached", Or(file, "a file to the meeting"));
@@ -101,9 +104,9 @@ public sealed class StepNamer
             case "execute_code": return ("Running Python", "Ran Python");
             case "remember": return ("Saving to memory", "Saved to memory");
             case "recall": return ("Checking memory", "Checked memory");
-            case "create_routine": return With("Setting up routine", "Set up routine", Quote(Arg("name")));
+            case "create_routine": return With("Setting up routine", "Set up routine", Arg("name"));
             case "list_routines": return ("Checking routines", "Checked routines");
-            case "remove_routine": return With("Removing routine", "Removed routine", Quote(Arg("name")));
+            case "remove_routine": return With("Removing routine", "Removed routine", Arg("name"));
             case "propose_access_change": return ("Preparing an access request", "Prepared an access request");
             case "list_access_permissions": return ("Checking approved access", "Checked approved access");
             case "state_sync_config": return ("Checking saved-state settings", "Checked saved-state settings");
@@ -175,14 +178,25 @@ public sealed class StepNamer
     private static string Site(string url)
     {
         if (!Uri.TryCreate(Clean(url), UriKind.Absolute, out var uri)) return "a web page";
-        var host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var slug = segments.Reverse().FirstOrDefault(s => s.Any(char.IsLetter) && s.Length > 3) ?? "";
-        slug = Uri.UnescapeDataString(slug);
-        var dot = slug.LastIndexOf('.');
-        if (dot > 0) slug = slug[..dot];
-        slug = string.Join(' ', slug.Split('-', '_', '+').Where(w => w.Length > 0 && !w.All(char.IsDigit)));
-        return string.IsNullOrWhiteSpace(slug) ? host : $"{host}: {slug}";
+        return uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
+    }
+
+    private static readonly HashSet<string> Stop = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "an", "and", "are", "about", "as", "at", "be", "by", "can", "could", "do", "does", "find",
+        "for", "from", "get", "give", "how", "i", "in", "is", "it", "me", "my", "of", "on", "or",
+        "please", "show", "tell", "that", "the", "this", "to", "was", "were", "what", "whats", "when",
+        "where", "which", "who", "why", "will", "with", "you", "your",
+    };
+
+    /// <summary>The words of a search that say what it is about, in order, without filler.</summary>
+    private static string Keywords(string query)
+    {
+        var words = Clean(query).Trim('"', '\'', '?', '.', '!').Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.Trim('"', '\'', '?', '.', ',', '!', ':', ';', '(', ')'))
+            .Where(w => w.Length > 0 && !Stop.Contains(w.Replace("'", "")))
+            .ToList();
+        return string.Join(' ', words);
     }
 
     private static string Clean(string v) =>
