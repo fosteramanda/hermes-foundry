@@ -58,6 +58,8 @@ public sealed class StepNamerTests
         Assert.Equal("Searching for top world news", running);
         Assert.Equal("Searching for Reuters AP",
             new StepNamer().Name("web_search", Args(("query", "Reuters AP"))).Running);
+        Assert.Equal("Searching for Trump Xi Putin",
+            new StepNamer().Name("web_search", Args(("query", "Verify Trump Xi Putin summit AP report"))).Running);
     }
 
     [Theory]

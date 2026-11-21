@@ -194,7 +194,8 @@ public sealed class StepNamer
 
     private static readonly HashSet<string> Stop = new(StringComparer.OrdinalIgnoreCase)
     {
-        "a", "an", "and", "are", "about", "as", "at", "be", "by", "can", "could", "do", "does", "find",
+        "a", "an", "and", "are", "about", "as", "at", "be", "by", "can", "check", "confirm", "could",
+        "do", "does", "find", "look", "lookup", "search", "verify", "validate",
         "for", "from", "get", "give", "how", "i", "in", "is", "it", "me", "my", "of", "on", "or",
         "please", "show", "tell", "that", "the", "this", "to", "was", "were", "what", "whats", "when",
         "where", "which", "who", "why", "will", "with", "you", "your",
