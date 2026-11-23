@@ -179,6 +179,30 @@ internal sealed class TeamsPlanBridge
         }
     }
 
+    /// <summary>
+    /// Placement test (layout A4): asks Teams to complete the Plan with no message at all, as a
+    /// typing activity like start, update and stop. The SDK's public CompleteAsync always sends a
+    /// message, so this calls the SDK's own sender for the "complete" operation. Returns
+    /// "accepted" or Teams' refusal; the Plan is left as Teams left it.
+    /// </summary>
+    public async Task<string> CompleteWithoutMessageAsync(CancellationToken ct)
+    {
+        if (Broken || !Started) return "not started";
+        try
+        {
+            await CloseOpenStepsAsync(ct);
+            var send = typeof(Plan).GetMethod("SendUpdateAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new MissingMethodException("Plan.SendUpdateAsync was not found; check the Microsoft.Teams.Apps version.");
+            await (Task)send.Invoke(_plan, [PlanTypes.Complete, null, ct])!;
+            return "accepted";
+        }
+        catch (Exception ex)
+        {
+            var inner = ex is TargetInvocationException { InnerException: not null } t ? t.InnerException! : ex;
+            return $"{inner.GetType().Name}: {Shorten(inner.Message)}";
+        }
+    }
+
     /// <summary>Stops the Plan after the answer was sent on its own (layout A1).</summary>
     public async Task<bool> StopAsync(CancellationToken ct)
     {

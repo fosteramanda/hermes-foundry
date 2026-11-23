@@ -1065,7 +1065,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// completes the Plan, so "Reasoned for" sits under the answer, outside it. "b": the answer
     /// message completes it, and Teams draws "Reasoned for" inside the answer bubble. "a1": the
     /// answer goes out on its own and the Plan is stopped, so there is no "Reasoned for" at all
-    /// (all three measured in Teams web, 21 Nov). The owner can switch it with "/cot layout a1|a2|b".
+    /// (all three measured in Teams web, 21 Nov). "a4" is a test: the answer goes out on its own and
+    /// the Plan is asked to complete with no message at all; if Teams refuses, it falls back to a2.
+    /// The owner can switch it with "/cot layout a1|a2|a4|b".
     /// </summary>
     private static string _cotLayout =
         (Environment.GetEnvironmentVariable("HERMES_COT_LAYOUT") ?? "a2").Trim().ToLowerInvariant();
@@ -1095,7 +1097,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         var value = m.Groups["value"].Value.ToLowerInvariant();
         switch (m.Groups["what"].Value.ToLowerInvariant())
         {
-            case "layout" when value is "a1" or "a2" or "b":
+            case "layout" when value is "a1" or "a2" or "a4" or "b":
                 _cotLayout = value;
                 break;
             case "reasoned" when value is "none" or "late":
@@ -1261,6 +1263,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                     await SendTeamsAnswerAsync(turnContext, reply, ct);
                     EdgeLog("plan.stopped.after.answer",
                         await plan.StopAsync(ct) ? $"steps={plan.StepCount} layout=a1" : plan.LastError);
+                    return true;
+                case "a4":
+                    await SendTeamsAnswerAsync(turnContext, reply, ct);
+                    var noMessage = await plan.CompleteWithoutMessageAsync(ct);
+                    EdgeLog("plan.complete.no.message", noMessage);
+                    if (noMessage != "accepted")
+                        EdgeLog("plan.completed.after.answer",
+                            await plan.CompleteEmptyAsync(ct) ? $"steps={plan.StepCount} layout=a4 fell back to a2" : plan.LastError);
                     return true;
                 case "a2":
                     await SendTeamsAnswerAsync(turnContext, reply, ct);
